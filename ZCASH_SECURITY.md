@@ -110,3 +110,4 @@ All Zcash-related actions generate structured, immutable security audit logs:
 - `zcash_transaction_recorded`: Logged when a transaction ID is submitted for tracking.
 - `zcash_transaction_verified`: Logged when on-chain explorer or lightwalletd confirms block inclusion.
 - `zcash_memo_security_violation`: Logged when an invalid or PII-laden memo is blocked.
+

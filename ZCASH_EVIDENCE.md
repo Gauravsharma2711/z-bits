@@ -66,3 +66,4 @@ Returns the verified payload:
 1. **Graph Anonymity:** External observers looking at block `2,984,102` see only shielded outputs in the Orchard pool. They cannot observe the sender, receiver address, or amount transferred.
 2. **Memo Privacy:** The memo payload `zbits:ord_a8f92b` is encrypted with the recipient's encryption key. An outside observer cannot read the text.
 3. **Decoupled Identity:** Even if the recipient decrypts the memo, `zbits:ord_a8f92b` reveals NO identity, email, or merchant details. Only the Z-Bits owner's private local SQLite database can link `ord_a8f92b` to the underlying purchase intent.
+

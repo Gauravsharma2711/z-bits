@@ -95,3 +95,4 @@ All dashboard panels are backed by live REST API endpoints mounted in `src/serve
 | `/api/zcash/transaction/verify` | `POST` | Verify a testnet txid on-chain and update record |
 | `/api/zcash/transaction/prepare` | `POST` | Format shielded payment payload with opaque memo |
 | `/api/zcash/privacy-evidence` | `GET` | Retrieve verified testnet evidence and explorer links |
+

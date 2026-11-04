@@ -61,3 +61,4 @@ Access the Z-Bits Dashboard at `http://localhost:5173/`.
 - [x] All database files are stored locally in the OS user app directory (`zbits.db`).
 - [x] Merchant claim codes are masked in all terminal outputs and UI views by default.
 - [x] Emergency Pause kill switch is readily accessible from the dashboard.
+

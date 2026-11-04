@@ -11,6 +11,7 @@ import { z } from "zod";
 import { gmailReplyInputSchema, gmailReplyReviewSchema } from "../shared/gmail-reply.js";
 import { intervalSchedule, routineScheduleInput, nextRoutineOccurrence, schedulePreview } from "../shared/calendar-schedule.js";
 import { OpenBotDatabase, RoutineRevisionConflictError, messageSubmissionDigest } from "./database.js";
+import { DatabaseService } from "./db/database-service.js";
 import { tombstoneHttpMapping, validateReplayDisclosure } from "./message-admission.js";
 import { registerExtensionRoutes } from "./extension-routes.js";
 import { WorkflowValidation, WorkflowCheckError } from "./workflow-validation.js";
@@ -325,11 +326,50 @@ app.use("/api", (request, response, next) => {
   next();
 });
 
-app.get("/api/healthz", (request, response) => {
+app.get("/api/healthz", async (request, response) => {
   const health = runnerPayload(db.getRunnerHealth());
   response.setHeader("Cache-Control", "no-store");
   if (process.env.OPENBOT_DESKTOP_INSTANCE_ID && request.get("x-openbot-desktop-identity") === process.env.OPENBOT_DESKTOP_INSTANCE_ID) response.setHeader("X-OpenBot-Desktop-Match", "1");
-  response.status(health.status === "online" ? 200 : 503).json({ ok: health.status === "online", runner: health.status, deployment: health.deployment?.mode, version: appVersion });
+  let dbStatus = { healthy: true, engine: "sqlite" as const };
+  if (process.env.DATABASE_URL) {
+    dbStatus = (await DatabaseService.getInstance().checkHealth()) as any;
+  }
+  const isHealthy = health.status === "online" && dbStatus.healthy;
+  response.status(isHealthy ? 200 : 503).json({
+    ok: isHealthy,
+    runner: health.status,
+    database: dbStatus,
+    deployment: health.deployment?.mode,
+    version: appVersion,
+  });
+});
+
+app.get("/api/readyz", async (_request, response) => {
+  if (process.env.DATABASE_URL) {
+    const dbHealth = await DatabaseService.getInstance().checkHealth();
+    if (!dbHealth.healthy) {
+      return response.status(503).json({ ready: false, error: dbHealth.error });
+    }
+  }
+  return response.status(200).json({ ready: true });
+});
+
+app.get("/api/db/status", async (_request, response) => {
+  if (process.env.DATABASE_URL) {
+    const health = await DatabaseService.getInstance().checkHealth();
+    return response.json({
+      configured: true,
+      active: DatabaseService.getInstance().isPostgresActive(),
+      ...health,
+    });
+  }
+  return response.json({
+    engine: "sqlite",
+    configured: false,
+    active: true,
+    healthy: true,
+    message: "Operating in local SQLite mode. Configure DATABASE_URL for Render Managed PostgreSQL.",
+  });
 });
 
 function loopback(request: express.Request) {
@@ -5957,6 +5997,11 @@ const server = app.listen(port, host, () => {
   console.log(`Z-Bits is awake on http://${host}:${port} (Studio web UI at http://${host}:4310)`);
   if (deployment.mode === "private_runner") console.log("Private runner mode is active with HTTPS, durable storage, and proxy-aware secure cookies.");
   if (host !== "127.0.0.1" && host !== "localhost") console.log(`Remote access is enabled. The private access key is stored at ${path.join(db.dataDir, "access.token")}`);
+  if (process.env.DATABASE_URL) {
+    DatabaseService.getInstance().initialize().catch((err) => {
+      console.error("FATAL: Failed to initialize PostgreSQL database on startup:", err);
+    });
+  }
 });
 
 let shuttingDown = false;
@@ -5986,7 +6031,12 @@ async function shutdown() {
   // service supervisor unable to replace this host after an update.
   for (const response of eventClients) response.end();
   eventClients.clear();
-  server.close(() => { pairedDevices.close(); db.close(); process.exit(0); });
+  server.close(async () => {
+    pairedDevices.close();
+    db.close();
+    await DatabaseService.getInstance().close().catch(() => {});
+    process.exit(0);
+  });
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());

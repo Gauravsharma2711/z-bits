@@ -69,3 +69,4 @@ While the Z-Bits hackathon prototype delivers a complete, secure, and verifiable
 3. **Mainnet Shielded Automated Runner:** Once Vizor or Zashi exposes a secure local IPC daemon or when running a local `zcashd` / `zebra` node, provide automated shielded payment execution on Zcash Mainnet alongside Bitrefill crypto payment invoices.
 4. **Hardware Security Module (HSM) / Secure Enclave for Gate:** Store the SpendPass HMAC signing key inside a TPM (Trusted Platform Module), Apple Secure Enclave, or YubiKey to prevent key extraction even if the host OS is compromised.
 5. **Multi-Signature Approval Center:** Upgrade the Owner Approval Center to support M-of-N threshold signatures (e.g. 2-of-3 family members or co-signers) for high-value agent purchases.
+

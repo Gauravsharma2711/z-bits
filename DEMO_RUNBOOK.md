@@ -65,3 +65,4 @@ Z-Bits introduces **Gate**, a deterministic financial constitution engine that p
     2. *The memo contains strictly zero PII (`zbits:ord_...`), audited by our regex engine before broadcast.*
     3. *Vizor Desktop Wallet workflow enables air-gapped signing via Keystone QR codes.*
 - **Conclusion:** *"Z-Bits: Your agents. Your rules. Your money. Thank you!"*
+

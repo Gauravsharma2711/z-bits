@@ -175,3 +175,4 @@ Z-Bits **does not fabricate** a fictitious local RPC server for Vizor. Instead, 
 2. The user copies the transaction parameters or scans the PCZT QR code directly into Vizor Wallet running on Testnet.
 3. The user signs and broadcasts via Vizor's native lightwalletd connection.
 4. The user pastes the resulting `txid` into Z-Bits Privacy Center to achieve instant cryptographic verification and ledger linking.
+
