@@ -1,0 +1,79 @@
+# ==============================================================================
+# Z-BITS RENDER BLUEPRINT SPECIFICATION
+# "Your agents. Your rules. Your money."
+# Deploys Z-Bits Web Service connected to Render Managed PostgreSQL
+# ==============================================================================
+
+databases:
+  - name: zbits-postgres
+    databaseName: zbits
+    user: zbits_user
+    region: oregon # Change to frankfurt, singapore, etc. as needed
+    plan: starter # Free / Starter / Standard
+    postgresMajorVersion: "16"
+
+services:
+  - type: web
+    name: z-bits
+    runtime: node
+    region: oregon # Must match database region for lowest latency
+    plan: starter
+    numInstances: 1
+    autoDeployTrigger: off
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22.14.0"
+      - key: NODE_ENV
+        value: production
+      - key: OPENBOT_HOST
+        value: 0.0.0.0
+      - key: OPENBOT_PORT
+        value: 10000
+
+      # Render Managed PostgreSQL internal connection string
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zbits-postgres
+          property: connectionString
+
+      # Cryptographic security secrets (auto-generated securely by Render)
+      - key: GATE_SIGNING_SECRET
+        generateValue: true
+      - key: SPENDPASS_SECRET_KEY
+        generateValue: true
+      - key: SPENDPASS_TTL_SECONDS
+        value: "900"
+
+      # Spending Constitution defaults (in cents)
+      - key: GATE_MAX_PER_TRANSACTION_CENTS
+        value: "5000"
+      - key: GATE_DAILY_BUDGET_CENTS
+        value: "15000"
+      - key: GATE_MONTHLY_BUDGET_CENTS
+        value: "50000"
+      - key: GATE_APPROVAL_THRESHOLD_CENTS
+        value: "2000"
+
+      # Zcash Shielded Privacy Network (NU7 Testnet)
+      - key: ZCASH_NETWORK
+        value: testnet
+      - key: ZCASH_LIGHTWALLETD_ENDPOINT
+        value: https://zcash-testnet.lightwalletd.com:9067
+      - key: ZCASH_EXPLORER_URL
+        value: https://blockexplorer.one/zcash/testnet/tx/
+      - key: ZCASH_DEFAULT_TESTNET_ADDRESS
+        value: utest1zcs8jqm6d3k5s2f4g7h9j1k3l5n7p9q2r4s6t8u0v2w4x6y8z0a2c4e6g8i0k2m4o6q8s0u2w4y6
+
+      # Bitrefill Integration (Runs in sandbox mode until live credentials supplied)
+      - key: BITREFILL_API_BASE_URL
+        value: https://api.bitrefill.com/v2
+      - key: BITREFILL_SANDBOX
+        value: "false"
+      - key: BITREFILL_API_KEY
+        sync: false
+      - key: BITREFILL_API_SECRET
+        sync: false
+

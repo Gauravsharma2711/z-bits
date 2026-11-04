@@ -11,6 +11,7 @@ import { z } from "zod";
 import { gmailReplyInputSchema, gmailReplyReviewSchema } from "../shared/gmail-reply.js";
 import { intervalSchedule, routineScheduleInput, nextRoutineOccurrence, schedulePreview } from "../shared/calendar-schedule.js";
 import { OpenBotDatabase, RoutineRevisionConflictError, messageSubmissionDigest } from "./database.js";
+import { DatabaseService } from "./db/database-service.js";
 import { tombstoneHttpMapping, validateReplayDisclosure } from "./message-admission.js";
 import { registerExtensionRoutes } from "./extension-routes.js";
 import { WorkflowValidation, WorkflowCheckError } from "./workflow-validation.js";
@@ -45,6 +46,10 @@ import { fetchGalleryTeammate, exportBot, importBot } from "./sharing.js";
 import { ProviderConnectionManager, readProviderStatus, latestProviderStatus } from "./providers.js";
 import { getGateEngine } from "./gate/gate-engine.js";
 import { getCommerceRunner } from "./runner/commerce-runner.js";
+import { getMayaWorkflow } from "./agents/maya-workflow.js";
+import { getBoltWorkflow } from "./agents/bolt-workflow.js";
+import { getZcashService } from "./zcash/zcash-service.js";
+import { executeAgentTool } from "./agents/agent-tools.js";
 import { DEFAULT_ZBITS_PERSONAS, getBitDisplayName } from "../shared/zbits-personas.js";
 import { once } from "node:events";
 import { ChatGptPlan } from "./chatgpt-plan.js";
@@ -321,11 +326,50 @@ app.use("/api", (request, response, next) => {
   next();
 });
 
-app.get("/api/healthz", (request, response) => {
+app.get("/api/healthz", async (request, response) => {
   const health = runnerPayload(db.getRunnerHealth());
   response.setHeader("Cache-Control", "no-store");
   if (process.env.OPENBOT_DESKTOP_INSTANCE_ID && request.get("x-openbot-desktop-identity") === process.env.OPENBOT_DESKTOP_INSTANCE_ID) response.setHeader("X-OpenBot-Desktop-Match", "1");
-  response.status(health.status === "online" ? 200 : 503).json({ ok: health.status === "online", runner: health.status, deployment: health.deployment?.mode, version: appVersion });
+  let dbStatus = { healthy: true, engine: "sqlite" as const };
+  if (process.env.DATABASE_URL) {
+    dbStatus = (await DatabaseService.getInstance().checkHealth()) as any;
+  }
+  const isHealthy = health.status === "online" && dbStatus.healthy;
+  response.status(isHealthy ? 200 : 503).json({
+    ok: isHealthy,
+    runner: health.status,
+    database: dbStatus,
+    deployment: health.deployment?.mode,
+    version: appVersion,
+  });
+});
+
+app.get("/api/readyz", async (_request, response) => {
+  if (process.env.DATABASE_URL) {
+    const dbHealth = await DatabaseService.getInstance().checkHealth();
+    if (!dbHealth.healthy) {
+      return response.status(503).json({ ready: false, error: dbHealth.error });
+    }
+  }
+  return response.status(200).json({ ready: true });
+});
+
+app.get("/api/db/status", async (_request, response) => {
+  if (process.env.DATABASE_URL) {
+    const health = await DatabaseService.getInstance().checkHealth();
+    return response.json({
+      configured: true,
+      active: DatabaseService.getInstance().isPostgresActive(),
+      ...health,
+    });
+  }
+  return response.json({
+    engine: "sqlite",
+    configured: false,
+    active: true,
+    healthy: true,
+    message: "Operating in local SQLite mode. Configure DATABASE_URL for Render Managed PostgreSQL.",
+  });
 });
 
 function loopback(request: express.Request) {
@@ -4002,6 +4046,15 @@ app.post("/api/internal/tools", async (request, response) => {
   };
   try {
     new WorkflowValidation(db).assertRun(runId);
+    if (action.startsWith("maya_") || action.startsWith("bolt_")) {
+      try {
+        const toolResult = await executeAgentTool(action, args, { botId, runId, ownerId: "local-owner" }, db);
+        broadcast();
+        return response.json(toolResult);
+      } catch (toolError) {
+        return response.status(400).json({ error: toolError instanceof Error ? toolError.message : "Agent tool execution failed." });
+      }
+    }
     if (action === "skill_propose") {
       try {
         const { steps: _steps, version: _version, ...skill } = parseAuthoredSkill(args);
@@ -5303,43 +5356,595 @@ app.post("/api/channels/discord/test", async (_request, response) => {
 });
 
 // --- Z-Bits Gate & Runner APIs ---
+app.get("/api/gate/constitution", (_request, response) => {
+  const gate = getGateEngine(db);
+  const constitution = gate.getConstitution("local-owner");
+  const spend = db.calculateSpend("local-owner");
+  response.json({
+    constitution,
+    spend,
+  });
+});
+
+app.put("/api/gate/constitution", (request, response) => {
+  try {
+    const gate = getGateEngine(db);
+    const updated = gate.updateConstitution("local-owner", request.body, "owner");
+    response.json({ ok: true, constitution: updated });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Invalid constitution update" });
+  }
+});
+
+app.patch("/api/gate/constitution", (request, response) => {
+  try {
+    const gate = getGateEngine(db);
+    const updated = gate.updateConstitution("local-owner", request.body, "owner");
+    response.json({ ok: true, constitution: updated });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Invalid constitution update" });
+  }
+});
+
 app.get("/api/gate/policy", (_request, response) => {
-  response.json(getGateEngine().getPolicy());
+  response.json(getGateEngine(db).getPolicy());
 });
 
 app.patch("/api/gate/policy", (request, response) => {
   try {
-    getGateEngine().updatePolicy(request.body, "user");
-    response.json({ ok: true, policy: getGateEngine().getPolicy() });
+    getGateEngine(db).updatePolicy(request.body, "user");
+    response.json({ ok: true, policy: getGateEngine(db).getPolicy() });
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "Invalid policy update" });
   }
 });
 
+app.post("/api/gate/emergency-pause", (request, response) => {
+  try {
+    const paused = Boolean(request.body.paused !== undefined ? request.body.paused : true);
+    const gate = getGateEngine(db);
+    gate.setEmergencyPause(paused, "local-owner", "owner");
+    response.json({ ok: true, emergencyPause: paused });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to toggle emergency pause" });
+  }
+});
+
+app.get("/api/gate/recipients", (_request, response) => {
+  const recipients = db.listRecipients("local-owner");
+  const recipientsWithAliases = recipients.map((r) => {
+    const aliases = db.listRecipientAliases(r.id);
+    const spend = db.calculateSpend("local-owner", r.id);
+    return {
+      ...r,
+      aliases,
+      spentCents: spend.recipientSpentCents,
+      remainingLimitCents: r.recipientLimitCents ? Math.max(0, r.recipientLimitCents - spend.recipientSpentCents) : null,
+    };
+  });
+  response.json(recipientsWithAliases);
+});
+
+app.post("/api/gate/recipients", (request, response) => {
+  try {
+    const parsed = z.object({
+      displayName: z.string().min(1).max(120),
+      trusted: z.boolean().optional(),
+      recipientLimitCents: z.number().int().nonnegative().nullable().optional(),
+      status: z.enum(["ACTIVE", "PENDING", "BLOCKED"]).optional(),
+      aliases: z.array(z.string()).optional(),
+    }).parse(request.body);
+
+    const rec = db.createRecipient("local-owner", parsed);
+    if (parsed.aliases && parsed.aliases.length > 0) {
+      for (const a of parsed.aliases) {
+        try { db.addRecipientAlias("local-owner", rec.id, a, "user"); } catch {}
+      }
+    }
+    const aliases = db.listRecipientAliases(rec.id);
+    response.status(201).json({ ...rec, aliases });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Invalid recipient creation" });
+  }
+});
+
+app.put("/api/gate/recipients/:id", (request, response) => {
+  try {
+    const updated = db.updateRecipient(request.params.id, request.body);
+    if (!updated) return response.status(404).json({ error: "Recipient not found" });
+    response.json(updated);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to update recipient" });
+  }
+});
+
+app.post("/api/gate/recipients/:id/aliases", (request, response) => {
+  try {
+    const aliasStr = String(request.body.alias || "").trim();
+    if (!aliasStr) return response.status(400).json({ error: "Alias is required" });
+    const added = db.addRecipientAlias("local-owner", request.params.id, aliasStr, "user");
+    response.status(201).json(added);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to add alias (it may already be registered)" });
+  }
+});
+
+app.get("/api/gate/approvals", (request, response) => {
+  const status = typeof request.query.status === "string" ? (request.query.status.toUpperCase() as any) : undefined;
+  const approvals = db.listGateApprovals("local-owner", status);
+  const approvalsWithIntents = approvals.map((appr) => {
+    const intent = db.getPurchaseIntent(appr.purchaseIntentId);
+    return {
+      ...appr,
+      intent,
+    };
+  });
+  response.json(approvalsWithIntents);
+});
+
+app.post("/api/gate/approvals/:id/resolve", (request, response) => {
+  try {
+    const decision = request.body.decision === "APPROVED" ? "APPROVED" : "REJECTED";
+    const gate = getGateEngine(db);
+    const result = gate.resolveApproval(request.params.id, decision, "owner");
+    response.json(result);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to resolve approval" });
+  }
+});
+
+app.get("/api/gate/ledger", (request, response) => {
+  const limit = Math.min(200, Math.max(1, parseInt(String(request.query.limit || "50"), 10) || 50));
+  const ledger = db.listSpendingLedger("local-owner", limit);
+  const spend = db.calculateSpend("local-owner");
+  response.json({
+    ledger,
+    spend,
+  });
+});
+
 app.get("/api/gate/audit", (request, response) => {
   const limit = Math.min(100, Math.max(1, parseInt(String(request.query.limit || "50"), 10) || 50));
-  response.json(getGateEngine().getAuditLog(limit));
+  response.json(getGateEngine(db).getAuditLog(limit));
 });
 
 app.post("/api/gate/evaluate", (request, response) => {
   try {
-    const evaluation = getGateEngine().evaluate(request.body);
+    const gate = getGateEngine(db);
+    const evaluation = gate.evaluate(request.body, "local-owner");
     response.json(evaluation);
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "Gate evaluation failed" });
   }
 });
 
+// --- Z-Bits SpendPass Cryptographic Token APIs ---
+
+app.get("/api/gate/spendpass", (request, response) => {
+  const status = typeof request.query.status === "string" ? (request.query.status.toUpperCase() as any) : undefined;
+  const limit = Math.min(200, Math.max(1, parseInt(String(request.query.limit || "50"), 10) || 50));
+  const tokens = db.listSpendPassTokens("local-owner", { status, limit });
+  response.json({ tokens });
+});
+
+app.get("/api/gate/spendpass/:id", (request, response) => {
+  const tokenRecord = db.getSpendPassToken(request.params.id) || db.getSpendPassTokenByJti(request.params.id);
+  if (!tokenRecord) {
+    return response.status(404).json({ error: `SpendPass "${request.params.id}" not found.` });
+  }
+  response.json(tokenRecord);
+});
+
+app.post("/api/gate/spendpass/verify", (request, response) => {
+  try {
+    const { token, executionContext } = request.body || {};
+    if (!token || typeof token !== "string") {
+      return response.status(400).json({ error: "SpendPass compact JWT token string is required." });
+    }
+    const gate = getGateEngine(db);
+    const verification = gate.verifySpendPass(token, executionContext);
+    response.json(verification);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "SpendPass verification failed" });
+  }
+});
+
+app.post("/api/gate/spendpass/claim", (request, response) => {
+  try {
+    const { spendpassId, executionId } = request.body || {};
+    if (!spendpassId || !executionId) {
+      return response.status(400).json({ error: "Both spendpassId and executionId are required to claim token." });
+    }
+    const gate = getGateEngine(db);
+    const claimed = gate.claimSpendPass(spendpassId, executionId);
+    if (!claimed) {
+      return response.status(409).json({ error: `SpendPass "${spendpassId}" could not be claimed (already claimed, consumed, revoked, or expired).` });
+    }
+    response.json({ ok: true, spendpassId, executionId, status: "CLAIMED" });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "SpendPass claim failed" });
+  }
+});
+
+app.post("/api/gate/spendpass/consume", (request, response) => {
+  try {
+    const { spendpassId, executionId } = request.body || {};
+    if (!spendpassId || !executionId) {
+      return response.status(400).json({ error: "Both spendpassId and executionId are required to complete token consumption." });
+    }
+    const gate = getGateEngine(db);
+    const consumed = gate.completeSpendPass(spendpassId, executionId);
+    if (!consumed) {
+      return response.status(409).json({ error: `SpendPass "${spendpassId}" could not be consumed (must be in CLAIMED state with matching executionId).` });
+    }
+    response.json({ ok: true, spendpassId, executionId, status: "CONSUMED" });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "SpendPass consumption failed" });
+  }
+});
+
+app.post("/api/gate/spendpass/:id/revoke", (request, response) => {
+  try {
+    const reason = request.body?.reason || "owner_revoked";
+    const gate = getGateEngine(db);
+    const revoked = gate.revokeSpendPass(request.params.id, reason);
+    if (!revoked) {
+      return response.status(409).json({ error: `SpendPass "${request.params.id}" could not be revoked (may be already consumed or not found).` });
+    }
+    response.json({ ok: true, spendpassId: request.params.id, status: "REVOKED", reason });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "SpendPass revocation failed" });
+  }
+});
+
 app.get("/api/runner/integrations", (_request, response) => {
-  response.json(getCommerceRunner().getIntegrations());
+  response.json(getCommerceRunner(db).getIntegrations());
+});
+
+app.get("/api/runner/products", async (request, response) => {
+  try {
+    const q = typeof request.query.q === "string" ? request.query.q : undefined;
+    const country = typeof request.query.country === "string" ? request.query.country : undefined;
+    const runner = getCommerceRunner(db);
+    const products = await runner.searchProducts(q, country);
+    response.json({ products });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to search products" });
+  }
+});
+
+app.get("/api/runner/products/:id", async (request, response) => {
+  try {
+    const runner = getCommerceRunner(db);
+    const product = await runner.getProduct(request.params.id);
+    if (!product) {
+      return response.status(404).json({ error: `Product "${request.params.id}" not found.` });
+    }
+    response.json(product);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get product" });
+  }
+});
+
+app.post("/api/runner/execute", async (request, response) => {
+  try {
+    const { spendpassToken, productId, denominationCents, currency, recipientId, actor } = request.body || {};
+    if (!spendpassToken || typeof spendpassToken !== "string") {
+      return response.status(400).json({ error: "spendpassToken string is required." });
+    }
+    if (!productId || typeof productId !== "string") {
+      return response.status(400).json({ error: "productId string is required." });
+    }
+    if (typeof denominationCents !== "number" || denominationCents <= 0) {
+      return response.status(400).json({ error: "denominationCents must be a positive integer." });
+    }
+
+    const runner = getCommerceRunner(db);
+    const result = await runner.executeSpendPass({
+      spendpassToken,
+      productId,
+      denominationCents,
+      currency,
+      recipientId,
+      actor,
+    });
+
+    const statusMap: Record<string, number> = {
+      SUCCESS: 200,
+      FAILED: 400,
+      UNCERTAIN: 202,
+    };
+    const statusCode = statusMap[result.status] || (result.success ? 200 : 400);
+    response.status(statusCode).json(result);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Execution failed" });
+  }
+});
+
+app.get("/api/runner/executions", (request, response) => {
+  try {
+    const ownerId = typeof request.query.ownerId === "string" ? request.query.ownerId : "local-owner";
+    const limit = Math.min(200, Math.max(1, parseInt(String(request.query.limit || "50"), 10) || 50));
+    const runner = getCommerceRunner(db);
+    const executions = runner.listExecutions(ownerId, limit);
+    response.json({ executions });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to list executions" });
+  }
+});
+
+app.get("/api/runner/executions/:id", (request, response) => {
+  try {
+    const runner = getCommerceRunner(db);
+    const execution = runner.getExecution(request.params.id);
+    if (!execution) {
+      return response.status(404).json({ error: `Execution "${request.params.id}" not found.` });
+    }
+    response.json(execution);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get execution" });
+  }
+});
+
+app.get("/api/runner/invoices/:id", (request, response) => {
+  try {
+    const runner = getCommerceRunner(db);
+    const invoice = runner.getInvoice(request.params.id);
+    if (!invoice) {
+      return response.status(404).json({ error: `Invoice "${request.params.id}" not found.` });
+    }
+    response.json(invoice);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get invoice" });
+  }
+});
+
+app.post("/api/runner/invoices/:id/poll", async (request, response) => {
+  try {
+    const runner = getCommerceRunner(db);
+    const invoice = await runner.pollInvoice(request.params.id);
+    if (!invoice) {
+      return response.status(404).json({ error: `Invoice "${request.params.id}" not found or failed to poll.` });
+    }
+    response.json(invoice);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to poll invoice" });
+  }
+});
+
+// --- Z-Bits Maya & Bolt Agent Workflow APIs ---
+
+app.post("/api/agents/maya/parse", async (request, response) => {
+  try {
+    const { query } = request.body || {};
+    if (!query || typeof query !== "string") {
+      return response.status(400).json({ error: "query string is required." });
+    }
+    const maya = getMayaWorkflow(db);
+    const extraction = await maya.parseRequest(query, "local-owner");
+    response.json(extraction);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to parse Maya request" });
+  }
+});
+
+app.post("/api/agents/maya/proposal", async (request, response) => {
+  try {
+    const { recipientAlias, productQuery, denominationCents, currency } = request.body || {};
+    if (!recipientAlias || !productQuery) {
+      return response.status(400).json({ error: "recipientAlias and productQuery are required." });
+    }
+    const maya = getMayaWorkflow(db);
+    const proposal = await maya.createProposal({
+      recipientAlias,
+      productQuery,
+      denominationCents,
+      currency,
+      ownerId: "local-owner",
+    });
+    response.json(proposal);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to generate proposal" });
+  }
+});
+
+app.post("/api/agents/maya/execute", async (request, response) => {
+  try {
+    const { recipientAlias, productId, denominationCents, currency, occasion, instructions } = request.body || {};
+    if (!recipientAlias || !productId || typeof denominationCents !== "number") {
+      return response.status(400).json({ error: "recipientAlias, productId, and denominationCents are required." });
+    }
+    const maya = getMayaWorkflow(db);
+    const result = await maya.submitPurchase({
+      recipientAlias,
+      productId,
+      denominationCents,
+      currency,
+      occasion,
+      instructions,
+      ownerId: "local-owner",
+    });
+    const statusCode = result.decision === "DENY" ? 403 : result.decision === "REQUIRE_APPROVAL" ? 202 : 200;
+    response.status(statusCode).json(result);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Maya execution failed" });
+  }
+});
+
+app.post("/api/agents/bolt/bounties", (request, response) => {
+  try {
+    const { contributorAlias, rewardAmountCents, reason, currency, source, sourceRef, idempotencyKey } = request.body || {};
+    if (!contributorAlias || typeof rewardAmountCents !== "number" || !reason) {
+      return response.status(400).json({ error: "contributorAlias, rewardAmountCents, and reason are required." });
+    }
+    const bolt = getBoltWorkflow(db);
+    const event = bolt.createBountyEvent({
+      contributorAlias,
+      rewardAmountCents,
+      reason,
+      currency,
+      source,
+      sourceRef,
+      idempotencyKey,
+      ownerId: "local-owner",
+    });
+    response.json(event);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to create bounty event" });
+  }
+});
+
+app.get("/api/agents/bolt/bounties", (request, response) => {
+  try {
+    const bolt = getBoltWorkflow(db);
+    const limit = Math.min(200, Math.max(1, parseInt(String(request.query.limit || "50"), 10) || 50));
+    const bounties = bolt.listBounties("local-owner", limit);
+    response.json({ bounties });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to list bounties" });
+  }
+});
+
+app.get("/api/agents/bolt/bounties/:id", (request, response) => {
+  try {
+    const bolt = getBoltWorkflow(db);
+    const bounty = bolt.getBounty(request.params.id) || bolt.getBountyByIdempotencyKey(request.params.id);
+    if (!bounty) {
+      return response.status(404).json({ error: `Bounty "${request.params.id}" not found.` });
+    }
+    response.json(bounty);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get bounty" });
+  }
+});
+
+app.post("/api/agents/bolt/bounties/:id/validate", async (request, response) => {
+  try {
+    const bolt = getBoltWorkflow(db);
+    const validation = await bolt.validateBountyEvent(request.params.id, "local-owner");
+    response.json(validation);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to validate bounty" });
+  }
+});
+
+app.post("/api/agents/bolt/bounties/:id/process", async (request, response) => {
+  try {
+    const { productId } = request.body || {};
+    const bolt = getBoltWorkflow(db);
+    const result = await bolt.processReward({
+      bountyId: request.params.id,
+      productId,
+      ownerId: "local-owner",
+    });
+    const statusCode = result.decision === "DENY" ? 403 : result.decision === "REQUIRE_APPROVAL" ? 202 : 200;
+    response.status(statusCode).json(result);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to process bounty reward" });
+  }
+});
+
+// ==========================================
+// ZCASH: SHIELDED PRIVACY & TESTNET NU7 ROUTES
+// ==========================================
+
+app.get("/api/zcash/status", (_request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    response.json(zcash.getStatus());
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get Zcash status" });
+  }
+});
+
+app.get("/api/zcash/transactions", (request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    const limit = Number(request.query.limit || 50);
+    response.json(zcash.listTransactions("local-owner", limit));
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to list Zcash transactions" });
+  }
+});
+
+app.get("/api/zcash/privacy-evidence", (_request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    response.json(zcash.getPrivacyEvidence());
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get privacy evidence" });
+  }
+});
+
+app.get("/api/zcash/vizor-guide", (_request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    response.json(zcash.getVizorCompatibility());
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get Vizor compatibility" });
+  }
+});
+
+app.post("/api/zcash/transaction/prepare", (request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    const { toAddress, amountZat, orderRef, fromAddress } = request.body || {};
+    if (!toAddress || !amountZat || !orderRef) {
+      return response.status(400).json({ error: "Missing required fields: toAddress, amountZat, orderRef" });
+    }
+    const prepared = zcash.prepareTransaction({ toAddress, amountZat: Number(amountZat), orderRef, fromAddress });
+    response.json(prepared);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to prepare Zcash transaction" });
+  }
+});
+
+app.post("/api/zcash/transaction/submit", (request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    const { txid, toAddress, fromAddress, amountZat, memoRef, blockHeight, confirmations } = request.body || {};
+    if (!txid || !toAddress || !amountZat || !memoRef) {
+      return response.status(400).json({ error: "Missing required fields: txid, toAddress, amountZat, memoRef" });
+    }
+    const recorded = zcash.recordTransaction({
+      txid,
+      toAddress,
+      fromAddress,
+      amountZat: Number(amountZat),
+      memoRef,
+      blockHeight: blockHeight ? Number(blockHeight) : undefined,
+      confirmations: confirmations ? Number(confirmations) : undefined,
+    });
+    response.json(recorded);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to submit Zcash transaction" });
+  }
+});
+
+app.post("/api/zcash/transaction/verify", async (request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    const { txid } = request.body || {};
+    if (!txid) {
+      return response.status(400).json({ error: "Missing txid to verify" });
+    }
+    const verified = await zcash.verifyTransactionOnChain(txid);
+    response.json(verified);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to verify Zcash transaction" });
+  }
 });
 
 app.get("/api/zbits/overview", async (_request, response) => {
-  const gate = getGateEngine();
-  const runner = getCommerceRunner();
+  const gate = getGateEngine(db);
+  const runner = getCommerceRunner(db);
+  const zcash = getZcashService(db);
   const bots = db.listBots();
   const providerStatus = await readProviderStatus(db);
   const pendingApprovals = db.listApprovals().filter((a: any) => a.status === "pending");
+  const pendingGateApprovals = db.listGateApprovals("local-owner", "PENDING");
+  const spend = db.calculateSpend("local-owner");
+  const recentZcash = zcash.listTransactions("local-owner", 5);
 
   response.json({
     brand: {
@@ -5348,11 +5953,19 @@ app.get("/api/zbits/overview", async (_request, response) => {
       version: "1.0.0",
     },
     gate: {
+      constitution: gate.getConstitution("local-owner"),
       policy: gate.getPolicy(),
+      spend,
+      pendingApprovalsCount: pendingGateApprovals.length,
       recentAuditCount: gate.getAuditLog(100).length,
     },
     runner: {
       integrations: runner.getIntegrations(),
+      executionsCount: runner.listExecutions("local-owner", 100).length,
+    },
+    zcash: {
+      status: zcash.getStatus(),
+      recentTransactions: recentZcash,
     },
     personas: DEFAULT_ZBITS_PERSONAS,
     bots: bots.map(b => ({
@@ -5384,6 +5997,11 @@ const server = app.listen(port, host, () => {
   console.log(`Z-Bits is awake on http://${host}:${port} (Studio web UI at http://${host}:4310)`);
   if (deployment.mode === "private_runner") console.log("Private runner mode is active with HTTPS, durable storage, and proxy-aware secure cookies.");
   if (host !== "127.0.0.1" && host !== "localhost") console.log(`Remote access is enabled. The private access key is stored at ${path.join(db.dataDir, "access.token")}`);
+  if (process.env.DATABASE_URL) {
+    DatabaseService.getInstance().initialize().catch((err) => {
+      console.error("FATAL: Failed to initialize PostgreSQL database on startup:", err);
+    });
+  }
 });
 
 let shuttingDown = false;
@@ -5413,7 +6031,12 @@ async function shutdown() {
   // service supervisor unable to replace this host after an update.
   for (const response of eventClients) response.end();
   eventClients.clear();
-  server.close(() => { pairedDevices.close(); db.close(); process.exit(0); });
+  server.close(async () => {
+    pairedDevices.close();
+    db.close();
+    await DatabaseService.getInstance().close().catch(() => {});
+    process.exit(0);
+  });
 }
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());

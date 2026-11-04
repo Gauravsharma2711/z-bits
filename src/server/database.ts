@@ -74,6 +74,32 @@ import type { WorkSnapshot, WorkReport } from "../shared/work-reports.js";
 import type { CodeCheckReceipt } from "../shared/code-checks.js";
 import { automationRepairHint, normalizedTriggerConfig } from "./automations.js";
 import { WorkflowValidation } from "./workflow-validation.js";
+import type {
+  SpendingConstitution,
+  CanonicalRecipient,
+  RecipientAlias,
+  PurchaseIntent,
+  SpendingLedgerEntry,
+  GateApprovalRecord,
+  GateDecisionRecord,
+  GateReasonCode,
+  GateDecisionOutcome,
+  GateApprovalStatus,
+  LedgerEntryStatus,
+  CurrencyCode,
+  SpendPassRecord,
+  SpendPassStatus,
+  RunnerExecutionRecord,
+  RunnerExecutionStatus,
+  MerchantInvoiceRecord,
+  MerchantInvoiceStatus,
+  BountyEvent,
+  BountySource,
+  BountyStatus,
+  ZcashShieldedRecord,
+  ZcashNetwork,
+  ZcashTransactionStatus,
+} from "../shared/zbits-types.js";
 
 type Row = Record<string, string | number | null>;
 const now = () => new Date().toISOString();
@@ -1224,6 +1250,217 @@ export class OpenBotDatabase {
     insertSetting.run("embeddings_model", "", settingsAt);
     insertSetting.run("max_teammates", "12", settingsAt);
     insertSetting.run("yolo_mode", "0", settingsAt);
+
+    // Z-Bits Gate: Deterministic Financial Engine Tables
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS spending_constitution (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        max_per_order_cents INTEGER NOT NULL DEFAULT 5000,
+        daily_limit_cents INTEGER NOT NULL DEFAULT 15000,
+        monthly_limit_cents INTEGER NOT NULL DEFAULT 50000,
+        require_approval_above_cents INTEGER NOT NULL DEFAULT 2000,
+        allowed_categories_json TEXT NOT NULL DEFAULT '["food","streaming","digital_gift_cards","gaming","utilities","mobile"]',
+        allowed_merchants_json TEXT NOT NULL DEFAULT '["bitrefill","steam","amazon_egift","uber_eats","doordash"]',
+        allowed_denominations_json TEXT NOT NULL DEFAULT '[]',
+        trusted_recipient_only INTEGER NOT NULL DEFAULT 0,
+        emergency_pause INTEGER NOT NULL DEFAULT 0,
+        policy_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS recipients (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        display_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'ACTIVE',
+        trusted INTEGER NOT NULL DEFAULT 1,
+        recipient_limit_cents INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS recipient_aliases (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        recipient_id TEXT NOT NULL REFERENCES recipients(id) ON DELETE CASCADE,
+        alias TEXT NOT NULL,
+        normalized_alias TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'user',
+        created_at TEXT NOT NULL,
+        UNIQUE(owner_id, normalized_alias)
+      );
+
+      CREATE TABLE IF NOT EXISTS purchase_intents (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL,
+        recipient_id TEXT REFERENCES recipients(id),
+        raw_recipient TEXT NOT NULL,
+        merchant TEXT NOT NULL,
+        product_id TEXT,
+        category TEXT,
+        denomination_cents INTEGER NOT NULL DEFAULT 0,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        estimated_total_cents INTEGER NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        intent_digest TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(owner_id, idempotency_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS spending_ledger (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        recipient_id TEXT NOT NULL REFERENCES recipients(id) ON DELETE CASCADE,
+        purchase_intent_id TEXT NOT NULL REFERENCES purchase_intents(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL,
+        amount_cents INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        status TEXT NOT NULL DEFAULT 'RESERVED',
+        created_at TEXT NOT NULL,
+        settled_at TEXT,
+        expires_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS gate_approvals (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        purchase_intent_id TEXT NOT NULL REFERENCES purchase_intents(id) ON DELETE CASCADE,
+        reason TEXT NOT NULL,
+        reason_codes_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        resolved_by TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS gate_decisions (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        purchase_intent_id TEXT NOT NULL REFERENCES purchase_intents(id) ON DELETE CASCADE,
+        decision TEXT NOT NULL,
+        reason_codes_json TEXT NOT NULL DEFAULT '[]',
+        policy_version INTEGER NOT NULL,
+        remaining_daily_budget_cents INTEGER NOT NULL,
+        remaining_monthly_budget_cents INTEGER NOT NULL,
+        remaining_recipient_budget_cents INTEGER,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS spendpass_tokens (
+        id TEXT PRIMARY KEY,
+        jti TEXT UNIQUE NOT NULL,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        purchase_intent_id TEXT NOT NULL REFERENCES purchase_intents(id) ON DELETE CASCADE,
+        authorization_id TEXT NOT NULL,
+        reservation_id TEXT NOT NULL REFERENCES spending_ledger(id) ON DELETE CASCADE,
+        recipient_id TEXT NOT NULL REFERENCES recipients(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL,
+        merchant_id TEXT NOT NULL,
+        product_id TEXT,
+        denomination INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        max_amount INTEGER NOT NULL,
+        policy_version INTEGER NOT NULL,
+        key_id TEXT NOT NULL DEFAULT 'k1',
+        status TEXT NOT NULL DEFAULT 'ISSUED',
+        execution_id TEXT,
+        revocation_reason TEXT,
+        token TEXT,
+        issued_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(owner_id, authorization_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS runner_executions (
+        id TEXT PRIMARY KEY,
+        spendpass_id TEXT NOT NULL REFERENCES spendpass_tokens(id) ON DELETE CASCADE,
+        purchase_intent_id TEXT NOT NULL REFERENCES purchase_intents(id) ON DELETE CASCADE,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        merchant TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        actual_amount_cents INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        invoice_id TEXT,
+        merchant_invoice_id TEXT,
+        error TEXT,
+        reason_codes_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS runner_invoices (
+        id TEXT PRIMARY KEY,
+        execution_id TEXT NOT NULL REFERENCES runner_executions(id) ON DELETE CASCADE,
+        purchase_intent_id TEXT NOT NULL REFERENCES purchase_intents(id) ON DELETE CASCADE,
+        spendpass_id TEXT NOT NULL REFERENCES spendpass_tokens(id) ON DELETE CASCADE,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        merchant TEXT NOT NULL,
+        merchant_invoice_id TEXT UNIQUE NOT NULL,
+        merchant_order_id TEXT,
+        product_id TEXT NOT NULL,
+        denomination INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        actual_amount_cents INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'CREATED',
+        merchant_status TEXT NOT NULL,
+        delivery_ref TEXT,
+        delivered_at TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_runner_invoices_merchant_inv ON runner_invoices(merchant_invoice_id);
+
+      CREATE TABLE IF NOT EXISTS bounty_events (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        contributor_alias TEXT NOT NULL,
+        contributor_id TEXT REFERENCES recipients(id) ON DELETE SET NULL,
+        reward_amount_cents INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        reason TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'manual',
+        source_ref TEXT,
+        idempotency_key TEXT UNIQUE NOT NULL,
+        purchase_intent_id TEXT REFERENCES purchase_intents(id) ON DELETE SET NULL,
+        execution_id TEXT REFERENCES runner_executions(id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_bounty_events_owner ON bounty_events(owner_id);
+      CREATE INDEX IF NOT EXISTS idx_bounty_events_idempotency ON bounty_events(idempotency_key);
+
+      CREATE TABLE IF NOT EXISTS zcash_transactions (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        network TEXT NOT NULL DEFAULT 'testnet',
+        txid TEXT UNIQUE NOT NULL,
+        from_address TEXT,
+        to_address TEXT NOT NULL,
+        amount_zat INTEGER NOT NULL,
+        memo_ref TEXT NOT NULL,
+        block_height INTEGER,
+        confirmations INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'SUBMITTED',
+        explorer_url TEXT NOT NULL,
+        error_message TEXT,
+        submitted_at TEXT NOT NULL,
+        verified_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_zcash_tx_owner ON zcash_transactions(owner_id);
+      CREATE INDEX IF NOT EXISTS idx_zcash_tx_txid ON zcash_transactions(txid);
+    `);
     this.db.exec(`UPDATE bots SET mac_access_enabled=CAST((SELECT setting_value FROM app_settings WHERE setting_key='mac_access_enabled') AS INTEGER)`);
   }
 
@@ -1237,6 +1474,23 @@ export class OpenBotDatabase {
     `).run(DEFAULT_OWNER, createdAt, createdAt);
 
     this.db.prepare("INSERT OR IGNORE INTO threads (id,title,kind,bot_id,created_at,updated_at) VALUES ('team-room','The studio','room',NULL,?,?)").run(createdAt, createdAt);
+
+    // Seed default Gate spending constitution and self recipient
+    this.db.prepare(`
+      INSERT OR IGNORE INTO spending_constitution
+      (id, owner_id, currency, max_per_order_cents, daily_limit_cents, monthly_limit_cents, require_approval_above_cents, allowed_categories_json, allowed_merchants_json, allowed_denominations_json, trusted_recipient_only, emergency_pause, policy_version, created_at, updated_at)
+      VALUES ('default', ?, 'USD', 5000, 15000, 50000, 2000, '["food","streaming","digital_gift_cards","gaming","utilities","mobile"]', '["bitrefill","steam","amazon_egift","uber_eats","doordash"]', '[]', 0, 0, 1, ?, ?)
+    `).run(DEFAULT_OWNER, createdAt, createdAt);
+
+    this.db.prepare(`
+      INSERT OR IGNORE INTO recipients (id, owner_id, display_name, status, trusted, recipient_limit_cents, created_at, updated_at)
+      VALUES ('rec_self', ?, 'Myself', 'ACTIVE', 1, NULL, ?, ?)
+    `).run(DEFAULT_OWNER, createdAt, createdAt);
+
+    this.db.prepare(`
+      INSERT OR IGNORE INTO recipient_aliases (id, owner_id, recipient_id, alias, normalized_alias, source, created_at)
+      VALUES ('alias_self', ?, 'rec_self', 'self', 'self', 'system', ?)
+    `).run(DEFAULT_OWNER, createdAt);
     const count = this.db.prepare("SELECT COUNT(*) AS count FROM bots").get() as Row;
     if (seedStarterBots && Number(count.count) === 0) {
       const bots = [
@@ -4962,6 +5216,1233 @@ export class OpenBotDatabase {
       nextRoutineAt: next.next_at ? String(next.next_at) : null, lastError: row?.last_error ? String(row.last_error) : null,
       backgroundService: process.platform === "darwin" ? "not_installed" : "unsupported",
       backgroundServiceDetail: process.platform === "darwin" ? "Sidemates is running in this app session." : "Background launch is currently available on macOS.",
+    };
+  }
+
+  // ==========================================
+  // Z-BITS GATE: FINANCIAL DATABASE OPERATIONS
+  // ==========================================
+
+  normalizeAlias(raw: string): string {
+    return raw.trim().toLowerCase().replace(/[\s\-_.]+/g, " ");
+  }
+
+  getSpendingConstitution(ownerId = DEFAULT_OWNER): SpendingConstitution {
+    const row = this.db.prepare("SELECT * FROM spending_constitution WHERE owner_id=? LIMIT 1").get(ownerId) as Row;
+    if (!row) {
+      const at = now();
+      this.db.prepare(`
+        INSERT INTO spending_constitution
+        (id, owner_id, currency, max_per_order_cents, daily_limit_cents, monthly_limit_cents, require_approval_above_cents, allowed_categories_json, allowed_merchants_json, allowed_denominations_json, trusted_recipient_only, emergency_pause, policy_version, created_at, updated_at)
+        VALUES ('default', ?, 'USD', 5000, 15000, 50000, 2000, '["food","streaming","digital_gift_cards","gaming","utilities","mobile"]', '["bitrefill","steam","amazon_egift","uber_eats","doordash"]', '[]', 0, 0, 1, ?, ?)
+      `).run(ownerId, at, at);
+      return this.getSpendingConstitution(ownerId);
+    }
+    return {
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      currency: (String(row.currency || "USD")) as CurrencyCode,
+      maxPerOrderCents: Number(row.max_per_order_cents || 5000),
+      dailyBudgetCents: Number(row.daily_limit_cents || 15000),
+      monthlyBudgetCents: Number(row.monthly_limit_cents || 50000),
+      requireApprovalAboveCents: Number(row.require_approval_above_cents || 2000),
+      allowedCategories: jsonArray<string>(row.allowed_categories_json),
+      allowedMerchants: jsonArray<string>(row.allowed_merchants_json),
+      allowedDenominations: jsonArray<number>(row.allowed_denominations_json),
+      trustedRecipientOnly: asBoolean(row.trusted_recipient_only),
+      emergencyPause: asBoolean(row.emergency_pause),
+      policyVersion: Number(row.policy_version || 1),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  updateSpendingConstitution(ownerId = DEFAULT_OWNER, patch: Partial<SpendingConstitution>): SpendingConstitution {
+    const current = this.getSpendingConstitution(ownerId);
+    const updated: SpendingConstitution = {
+      ...current,
+      ...patch,
+      policyVersion: current.policyVersion + 1,
+      updatedAt: now(),
+    };
+    this.db.prepare(`
+      UPDATE spending_constitution SET
+        currency=?,
+        max_per_order_cents=?,
+        daily_limit_cents=?,
+        monthly_limit_cents=?,
+        require_approval_above_cents=?,
+        allowed_categories_json=?,
+        allowed_merchants_json=?,
+        allowed_denominations_json=?,
+        trusted_recipient_only=?,
+        emergency_pause=?,
+        policy_version=?,
+        updated_at=?
+      WHERE owner_id=?
+    `).run(
+      updated.currency,
+      updated.maxPerOrderCents,
+      updated.dailyBudgetCents,
+      updated.monthlyBudgetCents,
+      updated.requireApprovalAboveCents,
+      stableJson(updated.allowedCategories),
+      stableJson(updated.allowedMerchants),
+      stableJson(updated.allowedDenominations),
+      updated.trustedRecipientOnly ? 1 : 0,
+      updated.emergencyPause ? 1 : 0,
+      updated.policyVersion,
+      updated.updatedAt,
+      ownerId
+    );
+    return updated;
+  }
+
+  createRecipient(ownerId = DEFAULT_OWNER, input: {
+    id?: string;
+    displayName: string;
+    trusted?: boolean;
+    recipientLimitCents?: number | null;
+    status?: "ACTIVE" | "PENDING" | "BLOCKED";
+  }): CanonicalRecipient {
+    const id = input.id || `rec_${randomBytes(6).toString("hex")}`;
+    const at = now();
+    const status = input.status || "ACTIVE";
+    const trusted = input.trusted !== undefined ? input.trusted : true;
+    const limit = input.recipientLimitCents !== undefined ? input.recipientLimitCents : null;
+
+    this.db.prepare(`
+      INSERT INTO recipients (id, owner_id, display_name, status, trusted, recipient_limit_cents, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, ownerId, input.displayName.trim(), status, trusted ? 1 : 0, limit, at, at);
+
+    // Automatically register display name as an alias
+    const normalized = this.normalizeAlias(input.displayName);
+    try {
+      this.addRecipientAlias(ownerId, id, input.displayName, "system");
+    } catch {
+      // Alias might already exist
+    }
+
+    return {
+      id,
+      ownerId,
+      displayName: input.displayName.trim(),
+      status,
+      trusted,
+      recipientLimitCents: limit,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  getRecipient(id: string): CanonicalRecipient | null {
+    const row = this.db.prepare("SELECT * FROM recipients WHERE id=?").get(id) as Row;
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      displayName: String(row.display_name),
+      status: String(row.status) as CanonicalRecipient["status"],
+      trusted: asBoolean(row.trusted),
+      recipientLimitCents: row.recipient_limit_cents !== null ? Number(row.recipient_limit_cents) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  listRecipients(ownerId = DEFAULT_OWNER): CanonicalRecipient[] {
+    const rows = this.db.prepare("SELECT * FROM recipients WHERE owner_id=? ORDER BY created_at ASC").all(ownerId) as Row[];
+    return rows.map((row) => ({
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      displayName: String(row.display_name),
+      status: String(row.status) as CanonicalRecipient["status"],
+      trusted: asBoolean(row.trusted),
+      recipientLimitCents: row.recipient_limit_cents !== null ? Number(row.recipient_limit_cents) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    }));
+  }
+
+  updateRecipient(id: string, patch: Partial<CanonicalRecipient>): CanonicalRecipient | null {
+    const current = this.getRecipient(id);
+    if (!current) return null;
+    const updated: CanonicalRecipient = {
+      ...current,
+      ...patch,
+      updatedAt: now(),
+    };
+    this.db.prepare(`
+      UPDATE recipients SET
+        display_name=?,
+        status=?,
+        trusted=?,
+        recipient_limit_cents=?,
+        updated_at=?
+      WHERE id=?
+    `).run(
+      updated.displayName,
+      updated.status,
+      updated.trusted ? 1 : 0,
+      updated.recipientLimitCents !== undefined ? updated.recipientLimitCents : null,
+      updated.updatedAt,
+      id
+    );
+    return updated;
+  }
+
+  addRecipientAlias(ownerId = DEFAULT_OWNER, recipientId: string, alias: string, source: "user" | "agent" | "system" = "user"): RecipientAlias {
+    const normalized = this.normalizeAlias(alias);
+    const id = `alias_${randomBytes(6).toString("hex")}`;
+    const at = now();
+    this.db.prepare(`
+      INSERT INTO recipient_aliases (id, owner_id, recipient_id, alias, normalized_alias, source, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, ownerId, recipientId, alias.trim(), normalized, source, at);
+    return {
+      id,
+      ownerId,
+      recipientId,
+      alias: alias.trim(),
+      normalizedAlias: normalized,
+      source,
+      createdAt: at,
+    };
+  }
+
+  listRecipientAliases(recipientId: string): RecipientAlias[] {
+    const rows = this.db.prepare("SELECT * FROM recipient_aliases WHERE recipient_id=? ORDER BY created_at ASC").all(recipientId) as Row[];
+    return rows.map((row) => ({
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      recipientId: String(row.recipient_id),
+      alias: String(row.alias),
+      normalizedAlias: String(row.normalized_alias),
+      source: String(row.source) as RecipientAlias["source"],
+      createdAt: String(row.created_at),
+    }));
+  }
+
+  resolveRecipientAlias(ownerId = DEFAULT_OWNER, rawAlias: string): CanonicalRecipient | null {
+    const trimmed = rawAlias.trim();
+    if (!trimmed) return null;
+    const normalized = this.normalizeAlias(trimmed);
+
+    // 1. Direct ID lookup
+    const byId = this.getRecipient(trimmed);
+    if (byId && byId.ownerId === ownerId) return byId;
+
+    // 2. Alias mapping lookup
+    const aliasRows = this.db.prepare(`
+      SELECT r.* FROM recipient_aliases a
+      JOIN recipients r ON a.recipient_id = r.id
+      WHERE a.owner_id = ? AND a.normalized_alias = ?
+    `).all(ownerId, normalized) as Row[];
+
+    if (aliasRows.length === 1) {
+      const row = aliasRows[0]!;
+      return {
+        id: String(row.id),
+        ownerId: String(row.owner_id),
+        displayName: String(row.display_name),
+        status: String(row.status) as CanonicalRecipient["status"],
+        trusted: asBoolean(row.trusted),
+        recipientLimitCents: row.recipient_limit_cents !== null ? Number(row.recipient_limit_cents) : null,
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+      };
+    } else if (aliasRows.length > 1) {
+      // Alias is ambiguous / collides across multiple recipients! Fail closed.
+      return null;
+    }
+
+    // 3. Fallback: Check display_name directly if not already in aliases
+    const nameRows = this.db.prepare(`
+      SELECT * FROM recipients WHERE owner_id = ?
+    `).all(ownerId) as Row[];
+
+    const matchedByName = nameRows.filter((r) => this.normalizeAlias(String(r.display_name)) === normalized);
+    if (matchedByName.length === 1) {
+      const row = matchedByName[0]!;
+      return {
+        id: String(row.id),
+        ownerId: String(row.owner_id),
+        displayName: String(row.display_name),
+        status: String(row.status) as CanonicalRecipient["status"],
+        trusted: asBoolean(row.trusted),
+        recipientLimitCents: row.recipient_limit_cents !== null ? Number(row.recipient_limit_cents) : null,
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+      };
+    }
+
+    return null;
+  }
+
+  savePurchaseIntent(intent: PurchaseIntent, ownerId = DEFAULT_OWNER): void {
+    const at = now();
+    const existing = this.getPurchaseIntent(intent.intentId);
+    if (existing) {
+      this.db.prepare(`
+        UPDATE purchase_intents SET
+          recipient_id=?,
+          status=?,
+          updated_at=?
+        WHERE id=?
+      `).run(
+        intent.recipientId || null,
+        intent.status || "PENDING",
+        at,
+        intent.intentId
+      );
+      return;
+    }
+
+    this.db.prepare(`
+      INSERT INTO purchase_intents
+      (id, owner_id, agent_id, recipient_id, raw_recipient, merchant, product_id, category, denomination_cents, currency, estimated_total_cents, idempotency_key, intent_digest, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      intent.intentId,
+      ownerId,
+      intent.botId,
+      intent.recipientId || null,
+      intent.recipient,
+      intent.merchant,
+      intent.productId || null,
+      intent.category || (intent as any).productCategory || null,
+      intent.denominationCents || intent.amountCents,
+      intent.currency || "USD",
+      intent.amountCents,
+      intent.idempotencyKey,
+      intent.intentDigest || createHash("sha256").update(String(intent.idempotencyKey || intent.intentId || at)).digest("hex"),
+      intent.status || "PENDING",
+      intent.createdAt || at,
+      at
+    );
+  }
+
+  getPurchaseIntent(intentId: string): PurchaseIntent | null {
+    const row = this.db.prepare("SELECT * FROM purchase_intents WHERE id=?").get(intentId) as Row;
+    if (!row) return null;
+    return {
+      intentId: String(row.id),
+      idempotencyKey: String(row.idempotency_key),
+      botId: String(row.agent_id),
+      recipientId: row.recipient_id ? String(row.recipient_id) : undefined,
+      recipient: String(row.raw_recipient),
+      merchant: String(row.merchant),
+      productId: row.product_id ? String(row.product_id) : undefined,
+      category: row.category ? String(row.category) : undefined,
+      denominationCents: Number(row.denomination_cents || row.estimated_total_cents),
+      amountCents: Number(row.estimated_total_cents),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      itemDescription: row.category ? `${String(row.merchant)} ${String(row.category)}` : String(row.merchant),
+      createdAt: String(row.created_at),
+      intentDigest: String(row.intent_digest),
+      status: String(row.status) as PurchaseIntent["status"],
+    };
+  }
+
+  getPurchaseIntentByIdempotencyKey(ownerId = DEFAULT_OWNER, idempotencyKey: string): PurchaseIntent | null {
+    const row = this.db.prepare("SELECT * FROM purchase_intents WHERE owner_id=? AND idempotency_key=? LIMIT 1").get(ownerId, idempotencyKey) as Row;
+    if (!row) return null;
+    return {
+      intentId: String(row.id),
+      idempotencyKey: String(row.idempotency_key),
+      botId: String(row.agent_id),
+      recipientId: row.recipient_id ? String(row.recipient_id) : undefined,
+      recipient: String(row.raw_recipient),
+      merchant: String(row.merchant),
+      productId: row.product_id ? String(row.product_id) : undefined,
+      category: row.category ? String(row.category) : undefined,
+      denominationCents: Number(row.denomination_cents || row.estimated_total_cents),
+      amountCents: Number(row.estimated_total_cents),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      itemDescription: row.category ? `${String(row.merchant)} ${String(row.category)}` : String(row.merchant),
+      createdAt: String(row.created_at),
+      intentDigest: String(row.intent_digest),
+      status: String(row.status) as PurchaseIntent["status"],
+    };
+  }
+
+  updatePurchaseIntentStatus(intentId: string, status: PurchaseIntent["status"]): void {
+    this.db.prepare("UPDATE purchase_intents SET status=?, updated_at=? WHERE id=?").run(status || "PENDING", now(), intentId);
+  }
+
+  /**
+   * Calculates shared cumulative spend and active reservations for owner and recipient.
+   * Cross-agent: all agents (Maya, Bolt, Sage) share the owner-level daily and monthly pools.
+   */
+  calculateSpend(ownerId = DEFAULT_OWNER, recipientId?: string): {
+    dailySpentCents: number;
+    monthlySpentCents: number;
+    recipientSpentCents: number;
+  } {
+    const currentTime = now();
+    const todayPrefix = currentTime.slice(0, 10);
+    const monthPrefix = currentTime.slice(0, 7);
+
+    const query = `
+      SELECT
+        COALESCE(SUM(CASE WHEN created_at LIKE ? || '%' THEN amount_cents ELSE 0 END), 0) AS daily_spent,
+        COALESCE(SUM(CASE WHEN created_at LIKE ? || '%' THEN amount_cents ELSE 0 END), 0) AS monthly_spent,
+        COALESCE(SUM(CASE WHEN recipient_id = ? THEN amount_cents ELSE 0 END), 0) AS recipient_spent
+      FROM spending_ledger
+      WHERE owner_id = ? AND (status = 'SETTLED' OR (status = 'RESERVED' AND expires_at > ?))
+    `;
+
+    const row = this.db.prepare(query).get(todayPrefix, monthPrefix, recipientId || "", ownerId, currentTime) as Row;
+
+    return {
+      dailySpentCents: Number(row?.daily_spent || 0),
+      monthlySpentCents: Number(row?.monthly_spent || 0),
+      recipientSpentCents: Number(row?.recipient_spent || 0),
+    };
+  }
+
+  /**
+   * Atomically reserves budget in the spending ledger.
+   */
+  reserveBudget(input: {
+    ownerId?: string;
+    recipientId: string;
+    purchaseIntentId: string;
+    agentId: string;
+    amountCents: number;
+    currency?: CurrencyCode;
+    ttlMinutes?: number;
+  }): SpendingLedgerEntry {
+    const ownerId = input.ownerId || DEFAULT_OWNER;
+    const at = now();
+    const expiresAt = new Date(Date.now() + (input.ttlMinutes || 15) * 60 * 1000).toISOString();
+    const id = `res_${randomBytes(6).toString("hex")}`;
+    const currency = input.currency || "USD";
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(`
+        INSERT INTO spending_ledger (id, owner_id, recipient_id, purchase_intent_id, agent_id, amount_cents, currency, status, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'RESERVED', ?, ?)
+      `).run(id, ownerId, input.recipientId, input.purchaseIntentId, input.agentId, input.amountCents, currency, at, expiresAt);
+
+      this.db.prepare("UPDATE purchase_intents SET status='AUTHORIZED', updated_at=? WHERE id=?").run(at, input.purchaseIntentId);
+      this.db.exec("COMMIT");
+
+      return {
+        id,
+        ownerId,
+        recipientId: input.recipientId,
+        purchaseIntentId: input.purchaseIntentId,
+        agentId: input.agentId,
+        amountCents: input.amountCents,
+        currency,
+        status: "RESERVED",
+        createdAt: at,
+        settledAt: null,
+        expiresAt,
+      };
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  settleBudget(intentId: string): boolean {
+    const at = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const res = this.db.prepare(`
+        UPDATE spending_ledger SET status='SETTLED', settled_at=?
+        WHERE purchase_intent_id=? AND status='RESERVED'
+      `).run(at, intentId);
+      this.db.prepare("UPDATE purchase_intents SET status='SETTLED', updated_at=? WHERE id=?").run(at, intentId);
+      this.db.exec("COMMIT");
+      return Number(res.changes) > 0;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  releaseBudget(intentId: string): boolean {
+    const at = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const res = this.db.prepare(`
+        UPDATE spending_ledger SET status='RELEASED'
+        WHERE purchase_intent_id=? AND status='RESERVED'
+      `).run(intentId);
+      this.db.prepare("UPDATE purchase_intents SET status='CANCELLED', updated_at=? WHERE id=?").run(at, intentId);
+      this.db.exec("COMMIT");
+      return Number(res.changes) > 0;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  listSpendingLedger(ownerId = DEFAULT_OWNER, limit = 50): SpendingLedgerEntry[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM spending_ledger
+      WHERE owner_id=?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(ownerId, limit) as Row[];
+
+    return rows.map((row) => ({
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      recipientId: String(row.recipient_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      agentId: String(row.agent_id),
+      amountCents: Number(row.amount_cents),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      status: String(row.status) as LedgerEntryStatus,
+      createdAt: String(row.created_at),
+      settledAt: row.settled_at ? String(row.settled_at) : null,
+      expiresAt: String(row.expires_at),
+    }));
+  }
+
+  createGateApproval(ownerId = DEFAULT_OWNER, purchaseIntentId: string, reason: string, reasonCodes: GateReasonCode[]): GateApprovalRecord {
+    const id = `appr_${randomBytes(6).toString("hex")}`;
+    const at = now();
+    this.db.prepare(`
+      INSERT INTO gate_approvals (id, owner_id, purchase_intent_id, reason, reason_codes_json, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'PENDING', ?)
+    `).run(id, ownerId, purchaseIntentId, reason, stableJson(reasonCodes), at);
+
+    return {
+      id,
+      ownerId,
+      purchaseIntentId,
+      reason,
+      reasonCodes,
+      status: "PENDING",
+      createdAt: at,
+      resolvedAt: null,
+      resolvedBy: null,
+    };
+  }
+
+  getGateApproval(id: string): GateApprovalRecord | null {
+    const row = this.db.prepare("SELECT * FROM gate_approvals WHERE id=?").get(id) as Row;
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      reason: String(row.reason),
+      reasonCodes: jsonArray<GateReasonCode>(row.reason_codes_json),
+      status: String(row.status) as GateApprovalStatus,
+      createdAt: String(row.created_at),
+      resolvedAt: row.resolved_at ? String(row.resolved_at) : null,
+      resolvedBy: row.resolved_by ? String(row.resolved_by) : null,
+    };
+  }
+
+  listGateApprovals(ownerId = DEFAULT_OWNER, status?: GateApprovalStatus): GateApprovalRecord[] {
+    const query = status
+      ? "SELECT * FROM gate_approvals WHERE owner_id=? AND status=? ORDER BY created_at DESC"
+      : "SELECT * FROM gate_approvals WHERE owner_id=? ORDER BY created_at DESC";
+    const rows = (status
+      ? this.db.prepare(query).all(ownerId, status)
+      : this.db.prepare(query).all(ownerId)) as Row[];
+
+    return rows.map((row) => ({
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      reason: String(row.reason),
+      reasonCodes: jsonArray<GateReasonCode>(row.reason_codes_json),
+      status: String(row.status) as GateApprovalStatus,
+      createdAt: String(row.created_at),
+      resolvedAt: row.resolved_at ? String(row.resolved_at) : null,
+      resolvedBy: row.resolved_by ? String(row.resolved_by) : null,
+    }));
+  }
+
+  resolveGateApproval(id: string, decision: "APPROVED" | "REJECTED", resolvedBy = "owner"): GateApprovalRecord | null {
+    const at = now();
+    const existing = this.getGateApproval(id);
+    if (!existing || existing.status !== "PENDING") return null;
+
+    this.db.prepare(`
+      UPDATE gate_approvals SET status=?, resolved_at=?, resolved_by=? WHERE id=?
+    `).run(decision, at, resolvedBy, id);
+
+    return {
+      ...existing,
+      status: decision,
+      resolvedAt: at,
+      resolvedBy,
+    };
+  }
+
+  recordGateDecision(record: Omit<GateDecisionRecord, "id" | "createdAt">): GateDecisionRecord {
+    const id = `dec_${randomBytes(6).toString("hex")}`;
+    const at = now();
+
+    this.db.prepare(`
+      INSERT INTO gate_decisions (id, owner_id, purchase_intent_id, decision, reason_codes_json, policy_version, remaining_daily_budget_cents, remaining_monthly_budget_cents, remaining_recipient_budget_cents, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      record.ownerId,
+      record.purchaseIntentId,
+      record.decision,
+      stableJson(record.reasonCodes),
+      record.policyVersion,
+      record.remainingDailyBudgetCents,
+      record.remainingMonthlyBudgetCents,
+      record.remainingRecipientBudgetCents !== undefined ? record.remainingRecipientBudgetCents : null,
+      at
+    );
+
+    return {
+      id,
+      ...record,
+      createdAt: at,
+    };
+  }
+
+  getGateDecisions(ownerId = DEFAULT_OWNER, limit = 50): GateDecisionRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM gate_decisions WHERE owner_id=? ORDER BY created_at DESC LIMIT ?
+    `).all(ownerId, limit) as Row[];
+
+    return rows.map((row) => ({
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      decision: String(row.decision) as GateDecisionOutcome,
+      reasonCodes: jsonArray<GateReasonCode>(row.reason_codes_json),
+      policyVersion: Number(row.policy_version),
+      remainingDailyBudgetCents: Number(row.remaining_daily_budget_cents),
+      remainingMonthlyBudgetCents: Number(row.remaining_monthly_budget_cents),
+      remainingRecipientBudgetCents: row.remaining_recipient_budget_cents !== null ? Number(row.remaining_recipient_budget_cents) : null,
+      createdAt: String(row.created_at),
+    }));
+  }
+
+  getGateDecisionsForIntent(intentId: string): GateDecisionRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM gate_decisions WHERE purchase_intent_id=? ORDER BY created_at DESC
+    `).all(intentId) as Row[];
+
+    return rows.map((row) => ({
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      decision: String(row.decision) as GateDecisionOutcome,
+      reasonCodes: jsonArray<GateReasonCode>(row.reason_codes_json),
+      policyVersion: Number(row.policy_version),
+      remainingDailyBudgetCents: Number(row.remaining_daily_budget_cents),
+      remainingMonthlyBudgetCents: Number(row.remaining_monthly_budget_cents),
+      remainingRecipientBudgetCents: row.remaining_recipient_budget_cents !== null ? Number(row.remaining_recipient_budget_cents) : null,
+      createdAt: String(row.created_at),
+    }));
+  }
+
+  // ==========================================
+  // Z-BITS SPENDPASS: PERSISTENCE & CONCURRENCY
+  // ==========================================
+
+  createSpendPassToken(record: Omit<SpendPassRecord, "createdAt" | "updatedAt">): SpendPassRecord {
+    const at = now();
+    this.db.prepare(`
+      INSERT INTO spendpass_tokens
+      (id, jti, owner_id, purchase_intent_id, authorization_id, reservation_id, recipient_id, agent_id, merchant_id, product_id, denomination, currency, max_amount, policy_version, key_id, status, execution_id, revocation_reason, token, issued_at, expires_at, consumed_at, revoked_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.jti,
+      record.ownerId,
+      record.purchaseIntentId,
+      record.authorizationId,
+      record.reservationId,
+      record.recipientId,
+      record.agentId,
+      record.merchantId,
+      record.productId || null,
+      record.denomination,
+      record.currency,
+      record.maxAmount,
+      record.policyVersion,
+      record.keyId,
+      record.status,
+      record.executionId || null,
+      record.revocationReason || null,
+      record.token || null,
+      record.issuedAt,
+      record.expiresAt,
+      record.consumedAt || null,
+      record.revokedAt || null,
+      at,
+      at
+    );
+
+    return {
+      ...record,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  getSpendPassToken(id: string): SpendPassRecord | null {
+    const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE id=?").get(id) as Row;
+    if (!row) return null;
+    return this.mapSpendPassRow(row);
+  }
+
+  getSpendPassTokenByJti(jti: string): SpendPassRecord | null {
+    const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE jti=?").get(jti) as Row;
+    if (!row) return null;
+    return this.mapSpendPassRow(row);
+  }
+
+  getSpendPassTokenByAuthorizationId(authorizationId: string): SpendPassRecord | null {
+    const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE authorization_id=?").get(authorizationId) as Row;
+    if (!row) return null;
+    return this.mapSpendPassRow(row);
+  }
+
+  listSpendPassTokens(ownerId = DEFAULT_OWNER, filter?: { status?: SpendPassStatus; limit?: number }): SpendPassRecord[] {
+    const limit = filter?.limit || 50;
+    const query = filter?.status
+      ? "SELECT * FROM spendpass_tokens WHERE owner_id=? AND status=? ORDER BY created_at DESC LIMIT ?"
+      : "SELECT * FROM spendpass_tokens WHERE owner_id=? ORDER BY created_at DESC LIMIT ?";
+    const rows = (filter?.status
+      ? this.db.prepare(query).all(ownerId, filter.status, limit)
+      : this.db.prepare(query).all(ownerId, limit)) as Row[];
+    return rows.map((r) => this.mapSpendPassRow(r));
+  }
+
+  claimSpendPassToken(id: string, executionId: string): boolean {
+    const at = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE id=?").get(id) as Row;
+      if (!row) {
+        this.db.exec("COMMIT");
+        return false;
+      }
+      if (row.status !== "ISSUED") {
+        this.db.exec("COMMIT");
+        return false;
+      }
+      if (new Date(String(row.expires_at)).getTime() <= Date.now()) {
+        this.db.prepare("UPDATE spendpass_tokens SET status='EXPIRED', updated_at=? WHERE id=?").run(at, id);
+        this.db.exec("COMMIT");
+        return false;
+      }
+      // Check emergency pause
+      const constRow = this.db.prepare("SELECT emergency_pause FROM spending_constitution WHERE owner_id=?").get(String(row.owner_id)) as Row;
+      if (constRow && asBoolean(constRow.emergency_pause)) {
+        this.db.prepare("UPDATE spendpass_tokens SET status='REVOKED', revoked_at=?, revocation_reason='emergency_pause', updated_at=? WHERE id=?").run(at, id);
+        this.db.exec("COMMIT");
+        return false;
+      }
+      // Check reservation is still RESERVED
+      const resRow = this.db.prepare("SELECT status FROM spending_ledger WHERE id=?").get(String(row.reservation_id)) as Row;
+      if (!resRow || resRow.status !== "RESERVED") {
+        this.db.exec("COMMIT");
+        return false;
+      }
+
+      this.db.prepare("UPDATE spendpass_tokens SET status='CLAIMED', execution_id=?, updated_at=? WHERE id=?").run(executionId, at, id);
+      this.db.exec("COMMIT");
+      return true;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  consumeSpendPassToken(id: string, executionId: string): boolean {
+    const at = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE id=?").get(id) as Row;
+      if (!row || row.status !== "CLAIMED" || row.execution_id !== executionId) {
+        this.db.exec("COMMIT");
+        return false;
+      }
+
+      this.db.prepare("UPDATE spendpass_tokens SET status='CONSUMED', consumed_at=?, updated_at=? WHERE id=?").run(at, at, id);
+      // Settle associated budget reservation
+      this.db.prepare("UPDATE spending_ledger SET status='SETTLED', settled_at=? WHERE id=?").run(at, String(row.reservation_id));
+      this.db.prepare("UPDATE purchase_intents SET status='SETTLED', updated_at=? WHERE id=?").run(at, String(row.purchase_intent_id));
+      this.db.exec("COMMIT");
+      return true;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  revokeSpendPassToken(id: string, reason: string): boolean {
+    const at = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE id=?").get(id) as Row;
+      if (!row || row.status === "CONSUMED") {
+        this.db.exec("COMMIT");
+        return false;
+      }
+
+      this.db.prepare("UPDATE spendpass_tokens SET status='REVOKED', revoked_at=?, revocation_reason=?, updated_at=? WHERE id=?").run(at, reason, at, id);
+      // Release associated reservation
+      this.db.prepare("UPDATE spending_ledger SET status='RELEASED' WHERE id=? AND status='RESERVED'").run(String(row.reservation_id));
+      this.db.prepare("UPDATE purchase_intents SET status='CANCELLED', updated_at=? WHERE id=?").run(at, String(row.purchase_intent_id));
+      this.db.exec("COMMIT");
+      return true;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  revokeAllUnclaimedSpendPass(ownerId = DEFAULT_OWNER, reason = "emergency_pause"): number {
+    const at = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const rows = this.db.prepare("SELECT id, reservation_id, purchase_intent_id FROM spendpass_tokens WHERE owner_id=? AND status='ISSUED'").all(ownerId) as Row[];
+      for (const row of rows) {
+        this.db.prepare("UPDATE spendpass_tokens SET status='REVOKED', revoked_at=?, revocation_reason=?, updated_at=? WHERE id=?").run(at, reason, at, String(row.id));
+        this.db.prepare("UPDATE spending_ledger SET status='RELEASED' WHERE id=? AND status='RESERVED'").run(String(row.reservation_id));
+        this.db.prepare("UPDATE purchase_intents SET status='CANCELLED', updated_at=? WHERE id=?").run(at, String(row.purchase_intent_id));
+      }
+      this.db.exec("COMMIT");
+      return rows.length;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  private mapSpendPassRow(row: Row): SpendPassRecord {
+    return {
+      id: String(row.id),
+      jti: String(row.jti),
+      ownerId: String(row.owner_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      authorizationId: String(row.authorization_id),
+      reservationId: String(row.reservation_id),
+      recipientId: String(row.recipient_id),
+      agentId: String(row.agent_id),
+      merchantId: String(row.merchant_id),
+      productId: row.product_id ? String(row.product_id) : null,
+      denomination: Number(row.denomination),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      maxAmount: Number(row.max_amount),
+      policyVersion: Number(row.policy_version),
+      keyId: String(row.key_id || "k1"),
+      status: String(row.status) as SpendPassStatus,
+      executionId: row.execution_id ? String(row.execution_id) : null,
+      revocationReason: row.revocation_reason ? String(row.revocation_reason) : null,
+      token: row.token ? String(row.token) : undefined,
+      issuedAt: String(row.issued_at),
+      expiresAt: String(row.expires_at),
+      consumedAt: row.consumed_at ? String(row.consumed_at) : null,
+      revokedAt: row.revoked_at ? String(row.revoked_at) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  // ==========================================
+  // Z-BITS RUNNER: EXECUTIONS & INVOICES
+  // ==========================================
+
+  createRunnerExecution(record: Omit<RunnerExecutionRecord, "createdAt" | "updatedAt">): RunnerExecutionRecord {
+    const at = now();
+    this.db.prepare(`
+      INSERT INTO runner_executions
+      (id, spendpass_id, purchase_intent_id, owner_id, merchant, status, actual_amount_cents, currency, invoice_id, merchant_invoice_id, error, reason_codes_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.spendpassId,
+      record.purchaseIntentId,
+      record.ownerId,
+      record.merchant,
+      record.status,
+      record.actualAmountCents,
+      record.currency,
+      record.invoiceId || null,
+      record.merchantInvoiceId || null,
+      record.error || null,
+      JSON.stringify(record.reasonCodes || []),
+      at,
+      at
+    );
+
+    return {
+      ...record,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  getRunnerExecution(id: string): RunnerExecutionRecord | null {
+    const row = this.db.prepare("SELECT * FROM runner_executions WHERE id=?").get(id) as Row;
+    if (!row) return null;
+    return this.mapRunnerExecutionRow(row);
+  }
+
+  getRunnerExecutionBySpendPassId(spendpassId: string): RunnerExecutionRecord | null {
+    const row = this.db.prepare("SELECT * FROM runner_executions WHERE spendpass_id=? ORDER BY created_at DESC LIMIT 1").get(spendpassId) as Row;
+    if (!row) return null;
+    return this.mapRunnerExecutionRow(row);
+  }
+
+  updateRunnerExecution(id: string, patch: Partial<RunnerExecutionRecord>): RunnerExecutionRecord | null {
+    const existing = this.getRunnerExecution(id);
+    if (!existing) return null;
+
+    const at = now();
+    const updated: RunnerExecutionRecord = {
+      ...existing,
+      ...patch,
+      updatedAt: at,
+    };
+
+    this.db.prepare(`
+      UPDATE runner_executions
+      SET status=?, actual_amount_cents=?, invoice_id=?, merchant_invoice_id=?, error=?, reason_codes_json=?, updated_at=?
+      WHERE id=?
+    `).run(
+      updated.status,
+      updated.actualAmountCents,
+      updated.invoiceId || null,
+      updated.merchantInvoiceId || null,
+      updated.error || null,
+      JSON.stringify(updated.reasonCodes || []),
+      at,
+      id
+    );
+
+    return updated;
+  }
+
+  listRunnerExecutions(ownerId = DEFAULT_OWNER, limit = 50): RunnerExecutionRecord[] {
+    const rows = this.db.prepare("SELECT * FROM runner_executions WHERE owner_id=? ORDER BY created_at DESC LIMIT ?").all(ownerId, limit) as Row[];
+    return rows.map((r) => this.mapRunnerExecutionRow(r));
+  }
+
+  createMerchantInvoice(record: Omit<MerchantInvoiceRecord, "createdAt" | "updatedAt">): MerchantInvoiceRecord {
+    const at = now();
+    this.db.prepare(`
+      INSERT INTO runner_invoices
+      (id, execution_id, purchase_intent_id, spendpass_id, owner_id, merchant, merchant_invoice_id, merchant_order_id, product_id, denomination, currency, actual_amount_cents, status, merchant_status, delivery_ref, delivered_at, error_message, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.executionId,
+      record.purchaseIntentId,
+      record.spendpassId,
+      record.ownerId,
+      record.merchant,
+      record.merchantInvoiceId,
+      record.merchantOrderId || null,
+      record.productId,
+      record.denomination,
+      record.currency,
+      record.actualAmountCents,
+      record.status,
+      record.merchantStatus,
+      record.deliveryRef || null,
+      record.deliveredAt || null,
+      record.errorMessage || null,
+      at,
+      at
+    );
+
+    return {
+      ...record,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  getMerchantInvoice(id: string): MerchantInvoiceRecord | null {
+    const row = this.db.prepare("SELECT * FROM runner_invoices WHERE id=?").get(id) as Row;
+    if (!row) return null;
+    return this.mapMerchantInvoiceRow(row);
+  }
+
+  getMerchantInvoiceByMerchantInvoiceId(merchantInvoiceId: string): MerchantInvoiceRecord | null {
+    const row = this.db.prepare("SELECT * FROM runner_invoices WHERE merchant_invoice_id=?").get(merchantInvoiceId) as Row;
+    if (!row) return null;
+    return this.mapMerchantInvoiceRow(row);
+  }
+
+  getMerchantInvoiceByExecutionId(executionId: string): MerchantInvoiceRecord | null {
+    const row = this.db.prepare("SELECT * FROM runner_invoices WHERE execution_id=? ORDER BY created_at DESC LIMIT 1").get(executionId) as Row;
+    if (!row) return null;
+    return this.mapMerchantInvoiceRow(row);
+  }
+
+  updateMerchantInvoice(id: string, patch: Partial<MerchantInvoiceRecord>): MerchantInvoiceRecord | null {
+    const existing = this.getMerchantInvoice(id);
+    if (!existing) return null;
+
+    const at = now();
+    const updated: MerchantInvoiceRecord = {
+      ...existing,
+      ...patch,
+      updatedAt: at,
+    };
+
+    this.db.prepare(`
+      UPDATE runner_invoices
+      SET status=?, merchant_status=?, delivery_ref=?, delivered_at=?, error_message=?, updated_at=?
+      WHERE id=?
+    `).run(
+      updated.status,
+      updated.merchantStatus,
+      updated.deliveryRef || null,
+      updated.deliveredAt || null,
+      updated.errorMessage || null,
+      at,
+      id
+    );
+
+    return updated;
+  }
+
+  listMerchantInvoices(ownerId = DEFAULT_OWNER, limit = 50): MerchantInvoiceRecord[] {
+    const rows = this.db.prepare("SELECT * FROM runner_invoices WHERE owner_id=? ORDER BY created_at DESC LIMIT ?").all(ownerId, limit) as Row[];
+    return rows.map((r) => this.mapMerchantInvoiceRow(r));
+  }
+
+  private mapRunnerExecutionRow(row: Row): RunnerExecutionRecord {
+    let reasonCodes: string[] = [];
+    try {
+      if (row.reason_codes_json) reasonCodes = JSON.parse(String(row.reason_codes_json));
+    } catch {}
+
+    return {
+      id: String(row.id),
+      spendpassId: String(row.spendpass_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      ownerId: String(row.owner_id),
+      merchant: String(row.merchant),
+      status: String(row.status) as RunnerExecutionStatus,
+      actualAmountCents: Number(row.actual_amount_cents),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      invoiceId: row.invoice_id ? String(row.invoice_id) : null,
+      merchantInvoiceId: row.merchant_invoice_id ? String(row.merchant_invoice_id) : null,
+      error: row.error ? String(row.error) : null,
+      reasonCodes,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private mapMerchantInvoiceRow(row: Row): MerchantInvoiceRecord {
+    return {
+      id: String(row.id),
+      executionId: String(row.execution_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      spendpassId: String(row.spendpass_id),
+      ownerId: String(row.owner_id),
+      merchant: String(row.merchant),
+      merchantInvoiceId: String(row.merchant_invoice_id),
+      merchantOrderId: row.merchant_order_id ? String(row.merchant_order_id) : null,
+      productId: String(row.product_id),
+      denomination: Number(row.denomination),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      actualAmountCents: Number(row.actual_amount_cents),
+      status: String(row.status) as MerchantInvoiceStatus,
+      merchantStatus: String(row.merchant_status),
+      deliveryRef: row.delivery_ref ? String(row.delivery_ref) : null,
+      deliveredAt: row.delivered_at ? String(row.delivered_at) : null,
+      errorMessage: row.error_message ? String(row.error_message) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  createBountyEvent(event: Omit<BountyEvent, "createdAt" | "updatedAt">): BountyEvent {
+    const at = now();
+    const created: BountyEvent = {
+      ...event,
+      createdAt: at,
+      updatedAt: at,
+    };
+    this.db.prepare(`
+      INSERT INTO bounty_events
+      (id, owner_id, contributor_alias, contributor_id, reward_amount_cents, currency, reason, source, source_ref, idempotency_key, purchase_intent_id, execution_id, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      created.id,
+      created.ownerId,
+      created.contributorAlias,
+      created.contributorId || null,
+      created.rewardAmountCents,
+      created.currency,
+      created.reason,
+      created.source,
+      created.sourceRef || null,
+      created.idempotencyKey,
+      created.purchaseIntentId || null,
+      created.executionId || null,
+      created.status,
+      at,
+      at
+    );
+    return created;
+  }
+
+  getBountyEvent(id: string): BountyEvent | null {
+    const row = this.db.prepare("SELECT * FROM bounty_events WHERE id=?").get(id) as Row;
+    if (!row) return null;
+    return this.mapBountyEventRow(row);
+  }
+
+  getBountyEventByIdempotencyKey(idempotencyKey: string): BountyEvent | null {
+    const row = this.db.prepare("SELECT * FROM bounty_events WHERE idempotency_key=?").get(idempotencyKey) as Row;
+    if (!row) return null;
+    return this.mapBountyEventRow(row);
+  }
+
+  updateBountyEvent(id: string, patch: Partial<BountyEvent>): BountyEvent | null {
+    const existing = this.getBountyEvent(id);
+    if (!existing) return null;
+    const at = now();
+    const updated: BountyEvent = {
+      ...existing,
+      ...patch,
+      updatedAt: at,
+    };
+    this.db.prepare(`
+      UPDATE bounty_events
+      SET contributor_id=?, purchase_intent_id=?, execution_id=?, status=?, updated_at=?
+      WHERE id=?
+    `).run(
+      updated.contributorId || null,
+      updated.purchaseIntentId || null,
+      updated.executionId || null,
+      updated.status,
+      at,
+      id
+    );
+    return updated;
+  }
+
+  listBountyEvents(ownerId = DEFAULT_OWNER, limit = 50): BountyEvent[] {
+    const rows = this.db.prepare("SELECT * FROM bounty_events WHERE owner_id=? ORDER BY created_at DESC LIMIT ?").all(ownerId, limit) as Row[];
+    return rows.map((r) => this.mapBountyEventRow(r));
+  }
+
+  private mapBountyEventRow(row: Row): BountyEvent {
+    return {
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      contributorAlias: String(row.contributor_alias),
+      contributorId: row.contributor_id ? String(row.contributor_id) : null,
+      rewardAmountCents: Number(row.reward_amount_cents),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      reason: String(row.reason),
+      source: String(row.source) as BountySource,
+      sourceRef: row.source_ref ? String(row.source_ref) : null,
+      idempotencyKey: String(row.idempotency_key),
+      purchaseIntentId: row.purchase_intent_id ? String(row.purchase_intent_id) : null,
+      executionId: row.execution_id ? String(row.execution_id) : null,
+      status: String(row.status) as BountyStatus,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  createZcashTransaction(record: Omit<ZcashShieldedRecord, "amountZec">): ZcashShieldedRecord {
+    const at = now();
+    const created: ZcashShieldedRecord = {
+      ...record,
+      amountZec: record.amountZat / 100_000_000,
+      submittedAt: record.submittedAt || at,
+    };
+    this.db.prepare(`
+      INSERT INTO zcash_transactions
+      (id, owner_id, network, txid, from_address, to_address, amount_zat, memo_ref, block_height, confirmations, status, explorer_url, error_message, submitted_at, verified_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      created.id,
+      created.ownerId,
+      created.network,
+      created.txid,
+      created.fromAddress || null,
+      created.toAddress,
+      created.amountZat,
+      created.memoRef,
+      created.blockHeight || null,
+      created.confirmations || 0,
+      created.status,
+      created.explorerUrl,
+      created.errorMessage || null,
+      created.submittedAt,
+      created.verifiedAt || null
+    );
+    return created;
+  }
+
+  getZcashTransaction(idOrTxid: string): ZcashShieldedRecord | null {
+    const row = this.db.prepare("SELECT * FROM zcash_transactions WHERE id=? OR txid=?").get(idOrTxid, idOrTxid) as Row;
+    if (!row) return null;
+    return this.mapZcashRow(row);
+  }
+
+  updateZcashTransaction(txid: string, patch: Partial<ZcashShieldedRecord>): ZcashShieldedRecord | null {
+    const existing = this.getZcashTransaction(txid);
+    if (!existing) return null;
+    const updated: ZcashShieldedRecord = {
+      ...existing,
+      ...patch,
+      amountZec: (patch.amountZat ?? existing.amountZat) / 100_000_000,
+    };
+    this.db.prepare(`
+      UPDATE zcash_transactions
+      SET block_height=?, confirmations=?, status=?, error_message=?, verified_at=?
+      WHERE txid=?
+    `).run(
+      updated.blockHeight || null,
+      updated.confirmations,
+      updated.status,
+      updated.errorMessage || null,
+      updated.verifiedAt || null,
+      txid
+    );
+    return updated;
+  }
+
+  listZcashTransactions(ownerId = DEFAULT_OWNER, limit = 50): ZcashShieldedRecord[] {
+    const rows = this.db.prepare("SELECT * FROM zcash_transactions WHERE owner_id=? ORDER BY submitted_at DESC LIMIT ?").all(ownerId, limit) as Row[];
+    return rows.map((r) => this.mapZcashRow(r));
+  }
+
+  private mapZcashRow(row: Row): ZcashShieldedRecord {
+    const zat = Number(row.amount_zat);
+    return {
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      network: String(row.network || "testnet") as ZcashNetwork,
+      txid: String(row.txid),
+      fromAddress: row.from_address ? String(row.from_address) : undefined,
+      toAddress: String(row.to_address),
+      amountZat: zat,
+      amountZec: zat / 100_000_000,
+      memoRef: String(row.memo_ref),
+      blockHeight: row.block_height ? Number(row.block_height) : undefined,
+      confirmations: Number(row.confirmations || 0),
+      status: String(row.status || "SUBMITTED") as ZcashTransactionStatus,
+      explorerUrl: String(row.explorer_url),
+      submittedAt: String(row.submitted_at),
+      verifiedAt: row.verified_at ? String(row.verified_at) : undefined,
+      errorMessage: row.error_message ? String(row.error_message) : undefined,
     };
   }
 

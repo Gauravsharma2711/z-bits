@@ -6,6 +6,7 @@
   "description": "A local-first, open-source home for persistent AI teammates.",
   "scripts": {
     "dev": "concurrently -k -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "doctor": "node scripts/fix-windows-stability.mjs",
     "dev:remote": "OPENBOT_HOST=0.0.0.0 concurrently -k -n server,web -c cyan,magenta \"npm:dev:server\" \"vite --host 0.0.0.0\"",
     "remote": "npm run build && OPENBOT_HOST=0.0.0.0 NODE_ENV=production tsx src/server/index.ts",
     "dev:server": "tsx watch src/server/index.ts",
@@ -14,6 +15,9 @@
     "start": "NODE_ENV=production tsx src/server/index.ts",
     "desktop": "npm --prefix desktop start",
     "mcp": "node --import tsx mcp/openbot.ts",
+    "db:migrate": "tsx scripts/db-migrate.ts migrate",
+    "db:status": "tsx scripts/db-migrate.ts status",
+    "db:reset": "tsx scripts/db-migrate.ts reset",
     "test": "tsx --test --test-concurrency=4 src/**/*.test.ts",
     "test:provider-runtime": "tsx scripts/test-provider-runtime.ts",
     "test:provider-test-ui": "tsx scripts/test-provider-test-ui.ts",
@@ -78,6 +82,7 @@
     "lucide-react": "^1.41.0",
     "music-metadata": "^11.15.0",
     "pdfjs-dist": "^6.3.289",
+    "pg": "^8.23.1",
     "playwright-core": "^1.62.1",
     "qrcode": "^1.5.4",
     "react": "^19.2.8",
@@ -94,6 +99,7 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.4.0",
+    "@types/pg": "^8.23.1",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
@@ -101,6 +107,7 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
     "concurrently": "^10.0.5",
+    "pg-mem": "^3.0.14",
     "typescript": "^7.0.2",
     "vite": "^8.2.2"
   },
