@@ -141,7 +141,7 @@ export class BitrefillClient {
   }
 
   public isConfigured(): boolean {
-    return Boolean(this.apiKey && this.apiSecret);
+    return Boolean(this.apiKey);
   }
 
   public isSandbox(): boolean {
