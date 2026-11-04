@@ -153,7 +153,18 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
 
     if (!response.ok) {
       const errText = await response.text().catch(() => "");
-      throw new Error(`OpenAI API error (${response.status}): ${errText.slice(0, 300)}`);
+      let detail = errText;
+      try {
+        const json = JSON.parse(errText);
+        detail = json.error?.message || json.error || errText;
+      } catch {}
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`OpenAI API authentication failed (${response.status}): ${detail.slice(0, 200)}`);
+      }
+      if (response.status === 429) {
+        throw new Error(`OpenAI API rate limit or quota exceeded (${response.status}): ${detail.slice(0, 200)}`);
+      }
+      throw new Error(`OpenAI API error (${response.status}): ${detail.slice(0, 300)}`);
     }
 
     const data = (await response.json()) as any;
@@ -225,7 +236,19 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     });
 
     if (!response.ok || !response.body) {
-      throw new Error(`OpenAI stream error (${response.status})`);
+      const errText = await response.text().catch(() => "");
+      let detail = errText;
+      try {
+        const json = JSON.parse(errText);
+        detail = json.error?.message || json.error || errText;
+      } catch {}
+      if (response.status === 401 || response.status === 403) {
+        throw new Error(`OpenAI stream authentication failed (${response.status}): ${detail.slice(0, 200)}`);
+      }
+      if (response.status === 429) {
+        throw new Error(`OpenAI stream rate limit or quota exceeded (${response.status}): ${detail.slice(0, 200)}`);
+      }
+      throw new Error(`OpenAI stream error (${response.status}): ${detail.slice(0, 300)}`);
     }
 
     const reader = response.body.getReader();
@@ -252,6 +275,18 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
           const delta = parsed.choices?.[0]?.delta?.content;
           if (delta) {
             yield { textDelta: delta };
+          }
+          const toolCallDeltas = parsed.choices?.[0]?.delta?.tool_calls;
+          if (Array.isArray(toolCallDeltas)) {
+            for (const tc of toolCallDeltas) {
+              yield {
+                toolCallDelta: {
+                  id: tc.id,
+                  name: tc.function?.name,
+                  arguments: tc.function?.arguments ? { chunk: tc.function.arguments } : undefined,
+                },
+              };
+            }
           }
         } catch {
           // ignore partial parse error

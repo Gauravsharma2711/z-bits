@@ -158,6 +158,10 @@ test("provider status explains an OpenCode sign-in with no usable models and des
   // Fake CLIs: OpenCode is signed in but lists no models; Claude Code is signed in.
   writeFileSync(path.join(bin, "opencode"), '#!/bin/sh\ncase "$1" in\n  --version) echo 1.18.31 ;;\n  auth) echo "OpenCode Go api" ;;\nesac\n', { mode: 0o700 });
   writeFileSync(path.join(bin, "claude"), '#!/bin/sh\ncase "$1" in\n  --version) echo "2.1.0 (Claude Code)" ;;\n  auth) echo \'{"loggedIn":true}\' ;;\nesac\n', { mode: 0o700 });
+  if (process.platform === "win32") {
+    writeFileSync(path.join(bin, "opencode.cmd"), '@echo off\r\nif "%1"=="--version" echo 1.18.31\r\nif "%1"=="auth" echo OpenCode Go api\r\nif "%1"=="models" exit /b 0\r\n');
+    writeFileSync(path.join(bin, "claude.cmd"), '@echo off\r\nif "%1"=="--version" echo 2.1.0 (Claude Code)\r\nif "%1"=="auth" echo {"loggedIn":true}\r\nif "%1"=="--help" exit /b 0\r\n');
+  }
   const previousPath = process.env.PATH;
   process.env.PATH = `${bin}${path.delimiter}${previousPath}`;
   const db = new OpenBotDatabase(root);

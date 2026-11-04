@@ -133,11 +133,26 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
       ];
     }
 
-    const result = await (ai.models as any).generateContent({
-      model,
-      contents,
-      config,
-    });
+    let result: any;
+    try {
+      result = await (ai.models as any).generateContent({
+        model,
+        contents,
+        config,
+      });
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (/API_KEY_INVALID|401|403|unauthorized/i.test(msg)) {
+        throw new Error("Google Gemini rejected your API key. Check that GEMINI_API_KEY is valid in Google AI Studio.");
+      }
+      if (/429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(msg)) {
+        throw new Error("Google Gemini quota or rate limit exceeded. Check your usage in Google AI Studio.");
+      }
+      if (/NOT_FOUND|404|model/i.test(msg)) {
+        throw new Error(`Google Gemini model '${model}' was not found or is unavailable for this key.`);
+      }
+      throw err;
+    }
 
     const candidate = result.candidates?.[0];
     const parts = candidate?.content?.parts || [];
@@ -192,16 +207,40 @@ export class GeminiProviderAdapter implements AIProviderAdapter {
       config.systemInstruction = { parts: [{ text: request.systemPrompt }] };
     }
 
-    const responseStream = await (ai.models as any).generateContentStream({
-      model,
-      contents,
-      config,
-    });
+    let responseStream: any;
+    try {
+      responseStream = await (ai.models as any).generateContentStream({
+        model,
+        contents,
+        config,
+      });
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      if (/API_KEY_INVALID|401|403|unauthorized/i.test(msg)) {
+        throw new Error("Google Gemini rejected your API key. Check that GEMINI_API_KEY is valid in Google AI Studio.");
+      }
+      if (/429|RESOURCE_EXHAUSTED|quota|rate limit/i.test(msg)) {
+        throw new Error("Google Gemini quota or rate limit exceeded. Check your usage in Google AI Studio.");
+      }
+      throw err;
+    }
 
     for await (const chunk of responseStream) {
       const text = chunk.text || "";
       if (text) {
         yield { textDelta: text };
+      }
+      const candidate = chunk.candidates?.[0];
+      const parts = candidate?.content?.parts || [];
+      for (const part of parts) {
+        if (part.functionCall) {
+          yield {
+            toolCallDelta: {
+              name: part.functionCall.name,
+              arguments: part.functionCall.args || {},
+            },
+          };
+        }
       }
     }
     yield { done: true };

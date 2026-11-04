@@ -94,7 +94,7 @@ export function connectionsFrom(status: { instances?: Array<{ id: string; provid
 
 /** Errors that mean "this AI is out of allowance for now", not "the job is wrong". */
 export function isLimitError(text: string): boolean {
-  return /\b(429|rate[ -]?limit\w*|usage limit|quota|insufficient_quota|limit (?:reached|exceeded)|exceeded your|too many requests|out of (?:credits|usage)|weekly allowance|subscription_sharing_usage_limit_exceeded|resource[_ ]exhausted|overloaded)\b/i.test(text);
+  return /\b(429|rate[ -]?limit\w*|usage limit|quota|insufficient_quota|insufficient[ -]?credit|limit (?:reached|exceeded)|exceeded your|too many requests|out of (?:credits|usage)|weekly allowance|subscription_sharing_usage_limit_exceeded|resource[_ ]exhausted|overloaded|额度不足)\b/i.test(text);
 }
 
 /** Connections that hit their limit rest for a while before being tried again. */

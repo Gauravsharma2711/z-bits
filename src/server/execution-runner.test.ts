@@ -199,7 +199,7 @@ test(
       assert.equal(run.status, "failed");
       assert.match(run.error || "", /stopped making progress/);
       assert.equal(run.partialText, "Partial work");
-      assert.equal(f.child().signalCode, "SIGKILL");
+      assert.equal(f.child().signalCode, process.platform === "win32" ? "SIGTERM" : "SIGKILL");
       assert.ok(run.activeDurationMs >= 100);
       assertNoFalseFinishedAnswer(f.db, run);
     } finally {
@@ -478,7 +478,7 @@ test(
       await stopped;
       await done;
       const resumed = f.db.getRun(f.run.id)!;
-      assert.equal(f.child().signalCode, "SIGKILL");
+      assert.equal(f.child().signalCode, process.platform === "win32" ? "SIGTERM" : "SIGKILL");
       assert.equal(resumed.status, "queued");
       assert.equal(resumed.partialText, "Saved partial answer");
       assert.equal(resumed.inputTokens, 10);

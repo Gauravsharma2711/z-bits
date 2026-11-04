@@ -5,7 +5,7 @@
 **Project:** Z-Bits  
 **Tagline:** Your agents. Your rules. Your money.  
 **Upstream Base:** [PrisacariuRobert/sidemates](https://github.com/PrisacariuRobert/sidemates) (`v0.42.0`)  
-**Audit & Stability Status:** Phase 00 (Audit) COMPLETE; Phase 01 (Core Stability & Windows Process Spawning Fixes) COMPLETE
+**Audit & Stability Status:** Phase 00 (Audit) COMPLETE; Phase 01 (Core Stability) COMPLETE; Phase 02 (AI Provider Integration & Reliability) COMPLETE
 
 ---
 
@@ -230,14 +230,16 @@ Across the repository, legacy strings were audited and classified into 6 categor
 
 1. **Installed Runtime Environment:**
    - `opencode`: Version `1.18.31` (Matches `VERIFIED_OPENCODE_VERSION` in `runtime-compatibility.ts`). Verified working via `GET /api/readiness` and `provider-test.test.ts`.
-   - `claude`: Version `2.1.193` (Claude Code CLI installed).
-2. **Provider Adapters Status:**
-   - `GeminiProviderAdapter`: Unit tested, supports `@google/genai`. Ready for live credential testing in Phase 02.
-   - `BedrockProviderAdapter`: Unit tested, supports Converse API via `@aws-sdk/client-bedrock-runtime`. Ready for live credential testing in Phase 02.
-   - `OpenAICompatibleAdapter`: Unit tested, supports generic OpenAI-compatible base URLs.
-3. **Provider Selection & Storage:**
-   - Handled via `src/server/providers.ts` and `src/shared/provider-config.ts`.
-   - Preserves upstream database tables `provider_instances`.
+   - `claude`: Version `2.1.193` (Claude Code CLI installed and logged in).
+2. **Provider Adapters Status (Phase 02 Complete):**
+   - `GeminiProviderAdapter`: Unit tested with `@google/genai` (SDK `^2.32.0`). Supports `generateContentStream`, `functionDeclarations` tool calling, normalized error handling (`401`, `429`, `404`).
+   - `ClaudeProviderAdapter`: Unit tested with Claude Code CLI and Model Context Protocol (`claude-mcp.mjs`). Categorizes Chinese quota error (`403 用户额度不足`).
+   - `OpenAICompatibleAdapter`: Unit tested for any standard OpenAI-compatible base URL. Supports SSE streaming and tool calling parsing.
+   - `OllamaProviderAdapter`: Unit tested for local Ollama instances (`http://127.0.0.1:11434/v1`). Accurately detects offline status.
+   - `AIProviderRegistry`: Dynamic provider registration, retrieval, and model listing verified.
+3. **Model Routing & Quota Rest:**
+   - Verified via `automatic-ai.test.ts` (4/4 tests passing).
+   - `isLimitError` updated to catch rate limits, quota exhaustion, and credit depletion (`额度不足`), resting the exhausted connection and switching to the next available provider.
 
 ---
 
@@ -272,6 +274,7 @@ The following core components of the Sidemates runtime MUST remain intact:
 | Severity | Risk | Impact | Mitigation Plan / Status |
 |---|---|---|---|
 | **RESOLVED** | Windows CLI `spawn` failure | Prevents `opencode` discovery in `providers.ts`, marking runtime unavailable in UI. | **RESOLVED IN PHASE 01**: Fixed `safeHostEnvironment()` and added conditional `shell: true` on Windows. |
+| **RESOLVED** | Windows batch quoting in `node.exe` execution | Caused `'C:\Program' is not recognized` when spawning Node.js test workers. | **RESOLVED IN PHASE 02**: Restricted `shell: true` in `opencode.ts` to batch CLIs only. |
 | **HIGH** | In-Memory Gate Ledger | Server restart clears budget and replay tracking, violating deterministic guarantees. | Migrate ledger, reservations, and SpendPass nonces to SQLite in Phase 03/04. |
 | **MEDIUM** | Bitrefill API credentials & rate limits | Live purchase or invoice polling fails if API keys or event credits are missing. | Validate Bitrefill API keys with test catalog search before issuing real orders. |
 | **MEDIUM** | Zcash NU7 Testnet tool compatibility | Outdated testnet SDKs may fail to synchronize or construct valid NU7 shielded proofs. | Use verified CLI/SDK from hackathon developer pack; verify testnet faucet balance. |
@@ -281,9 +284,9 @@ The following core components of the Sidemates runtime MUST remain intact:
 
 ## L. Recommended Next Phase
 
-**Proceed to Phase 02 — AI Provider Validation:**
-1. Test live provider connectivity with configured credentials (Google Gemini, AWS Bedrock, OpenAI-compatible).
-2. Validate streaming response handling and error propagation under live network conditions.
-3. Verify that provider credentials remain strictly encrypted in the server vault and never reach client code.
-4. Keep Phase 03+ (Gate recipient registry & shared ledger) paused until provider validation is confirmed.
+**Proceed to Phase 03 — Gate: Recipient Registry & Shared Ledger:**
+1. Implement canonical recipient identity resolution (`recipient_id`) and alias normalizer.
+2. Build persistent SQLite tables for `recipients`, `recipient_aliases`, `spending_ledger`, and `budget_reservations`.
+3. Implement 2-phase atomic budget hold (`reserveBudget` -> `settleBudget` / `releaseBudget`).
+4. Enforce cross-agent cumulative spending limits across Maya, Bolt, and Sage.
 

@@ -1,98 +1,110 @@
-# Z-Bits AI Provider Setup Guide
+# Z-Bits — AI Provider Configuration & Local Setup Guide
 
-Z-Bits features a **Universal AI Provider Architecture**. You can connect your preferred AI models and services without being locked into a single vendor.
-
----
-
-## 1. Google Gemini (Native `@google/genai` SDK)
-
-Z-Bits uses Google's latest official `@google/genai` TypeScript SDK.
-
-### Configuration
-1. Obtain an API key from [Google AI Studio](https://aistudio.google.com/).
-2. You can provide the key either via environment variable or in the Z-Bits web interface:
-   - **Environment:**
-     ```bash
-     export GEMINI_API_KEY="AIzaSy..."
-     ```
-   - **In UI:** Navigate to **AI Providers** &rarr; select **Google Gemini** &rarr; paste your API key &rarr; click **Save**.
-3. **Supported Models:**
-   - `google/gemini-2.5-flash` (Recommended default: fast, highly capable, supports tools and vision)
-   - `google/gemini-2.5-pro` (Complex reasoning, deep analysis, coding)
-   - `google/gemini-2.0-flash`
-   - `google/gemini-1.5-flash`
-   - `google/gemini-1.5-pro`
-
-### Security Note
-Your Gemini API key is authenticated exclusively on the Z-Bits server backend. It is **never** sent to browser JavaScript, localStorage, or logged in transcripts.
+**Target Version:** Z-Bits 0.42.0+  
+**Audience:** Developers & Hackathon Evaluators  
+**Security Notice:** Never paste private API keys into files committed to source control.
 
 ---
 
-## 2. AWS Bedrock
+## 1. Supported AI Providers
 
-Z-Bits offers first-class AWS Bedrock support through two integration paths:
+Z-Bits supports five primary provider routes:
+1. **Google Gemini** (Recommended for free-tier development)
+2. **Anthropic Claude Code**
+3. **OpenAI-Compatible Endpoints** (Groq, Together, DeepSeek, OpenRouter)
+4. **Ollama** (Local-only, privacy-focused)
+5. **OpenCode Runtime**
 
-### Option A: Native Bedrock Converse API (`@aws-sdk/client-bedrock-runtime`)
-Uses the official AWS SDK v3 Bedrock Converse and ConverseStream APIs.
+---
 
-1. **Authentication Options:**
-   - **AWS SDK Credential Provider Chain:** Reads standard `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION` from your environment.
-   - **Shared Profiles:** Uses `~/.aws/credentials` and `~/.aws/config`.
-   - **IAM Roles:** When deployed on AWS EC2, ECS, or Lambda, automatically assumes the attached IAM role.
-2. **Environment Variables:**
+## 2. Environment Configuration (`.env`)
+
+To connect AI providers locally, copy `.env.example` to `.env` in the project root:
+
+```bash
+cp .env.example .env
+```
+
+### 2.1 Google Gemini Setup (Recommended)
+1. Generate a free API key at [Google AI Studio](https://aistudio.google.com/apikey).
+2. Add your key to `.env`:
+   ```env
+   GEMINI_API_KEY=AIzaSy...your_gemini_key_here
+   ```
+3. Supported models:
+   - `gemini-2.5-flash` (Fast, generous rate limit)
+   - `gemini-2.5-pro` (Complex reasoning)
+   - `gemini-flash-lite-latest` (Minimal token usage)
+
+### 2.2 Claude Code Setup
+If you have Claude Code installed globally:
+1. Run in your terminal:
    ```bash
-   export AWS_REGION="us-east-1"
-   export AWS_ACCESS_KEY_ID="AKIA..."
-   export AWS_SECRET_ACCESS_KEY="..."
-   # Optional: export AWS_SESSION_TOKEN="..."
+   claude auth login
    ```
-3. **Supported Models:**
-   - `bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0` (Premier model for coding, autonomous execution)
-   - `bedrock/us.anthropic.claude-3-5-haiku-20241022-v1:0` (High speed, cost-efficient)
-   - `bedrock/amazon.nova-pro-v1:0`
-   - `bedrock/amazon.nova-lite-v1:0`
-   - `bedrock/meta.llama3-3-70b-instruct-v1:0`
-   - `bedrock/mistral.mistral-large-2407-v1:0`
+2. Or provide an Anthropic API key in `.env`:
+   ```env
+   ANTHROPIC_API_KEY=sk-ant-api03-...
+   ```
+3. Supported models:
+   - `claude-code/sonnet` (Default heavy reasoning)
+   - `claude-code/opus`
+   - `claude-code/haiku` (Fast light tasks)
 
-### Option B: AWS Bedrock OpenAI-Compatible Endpoint
-If you prefer Bedrock's OpenAI-compatible endpoint interface:
-1. Endpoint URL format:
-   ```text
-   https://bedrock-runtime.{region}.amazonaws.com/openai/v1
+### 2.3 OpenAI-Compatible Endpoints (Groq, Together, DeepSeek, OpenRouter)
+Configure any standard OpenAI-compatible base URL and API key in `.env`:
+```env
+OPENAI_API_KEY=sk-...your_key_here
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+For DeepSeek directly:
+```env
+OPENAI_API_KEY=sk-...your_deepseek_key
+OPENAI_BASE_URL=https://api.deepseek.com/v1
+```
+
+### 2.4 Local Ollama Setup
+1. Download and start [Ollama](https://ollama.com).
+2. Pull your chosen models:
+   ```bash
+   ollama pull llama3.1
+   ollama pull qwen2.5-coder
    ```
-2. In **AI Providers** &rarr; **Add Custom Provider**:
-   - Provider Name: `AWS Bedrock (OpenAI Endpoint)`
-   - Base URL: `https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1`
-   - API Key: Your Bedrock API token
-   - Model: `anthropic.claude-3-5-sonnet-20241022-v2:0`
+3. Start the Ollama daemon:
+   ```bash
+   ollama serve
+   ```
+4. Set `.env` to point to Ollama:
+   ```env
+   OPENAI_BASE_URL=http://127.0.0.1:11434/v1
+   OPENAI_API_KEY=ollama
+   ```
 
 ---
 
-## 3. Generic OpenAI-Compatible Providers
+## 3. Web UI Configuration (In-App)
 
-You can connect any inference provider or local server that implements the standard OpenAI chat completions endpoint (e.g. Groq, Together AI, OpenRouter, DeepSeek, vLLM, Ollama, LM Studio).
+You can also manage connections directly from the Z-Bits Studio web interface:
 
-### Setup in UI or Environment
-- **Groq:**
-  - Base URL: `https://api.groq.com/openai/v1`
-  - Model: `llama-3.3-70b-versatile`
-  - API Key: `gsk_...`
-- **Together AI:**
-  - Base URL: `https://api.together.xyz/v1`
-  - Model: `meta-llama/Llama-3-70b-chat-hf`
-  - API Key: `...`
-- **Local Ollama:**
-  - Base URL: `http://localhost:11434/v1`
-  - Model: `llama3.2`
-  - API Key: `ollama` (placeholder)
+1. Start Z-Bits:
+   ```bash
+   npm run dev
+   ```
+2. Open `http://localhost:4310` in your browser.
+3. Navigate to **Settings** (`gear icon`) → **AI Connections**.
+4. Click **Connect** on your preferred provider:
+   - For **Google Gemini**: Paste your AI Studio key directly. Z-Bits stores it encrypted in the server vault (`AES-256-GCM`).
+   - For **OpenAI-Compatible**: Enter the Base URL and API key.
+5. Click **Test Connection** to execute a real probe and verify model availability and round-trip latency.
 
 ---
 
-## 4. Preserved Built-in Providers
+## 4. Troubleshooting
 
-All existing provider integrations remain fully functional:
-- **Claude Code:** Automatically detects local Claude Code installation.
-- **OpenCode Go:** Built-in multi-model runner.
-- **OpenAI:** Direct OpenAI API integration (`OPENAI_API_KEY`).
-- **GitHub Copilot / ChatGPT Plan:** Direct web sign-in integration where supported.
-
+| Symptom | Cause | Solution |
+|---|---|---|
+| `Missing Gemini API key` | Neither `GEMINI_API_KEY` nor an in-app vault key was provided. | Add `GEMINI_API_KEY=...` to `.env` or paste the key into Studio AI settings. |
+| `Claude API rate limit or quota exceeded: 403` | Claude subscription or prepaid balance is exhausted. | Recharge balance in Anthropic Console or switch teammate to Gemini. |
+| `Ollama server is not running on 127.0.0.1:11434` | Ollama service is stopped. | Run `ollama serve` in a background terminal. |
+| `The connection test timed out` | Provider is experiencing high latency or rate-limiting. | Wait for the 60-second cooldown and test again, or choose a lighter model. |
+| `'C:\Program' is not recognized` | Unquoted batch file invocation on Windows. | Resolved in Phase 02; ensure latest code is running. |

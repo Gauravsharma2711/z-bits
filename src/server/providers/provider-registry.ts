@@ -32,6 +32,8 @@ export interface AIRequest {
   temperature?: number;
   maxTokens?: number;
   tools?: AIToolDefinition[];
+  timeoutMs?: number;
+  abortSignal?: AbortSignal;
 }
 
 export interface AIResponse {
@@ -101,5 +103,13 @@ export class AIProviderRegistry {
 
   public listAdapters(): AIProviderAdapter[] {
     return [...this.adapters.values()];
+  }
+
+  public count(): number {
+    return this.adapters.size;
+  }
+
+  public resetForTesting(): void {
+    this.adapters.clear();
   }
 }

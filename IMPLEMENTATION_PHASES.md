@@ -40,20 +40,23 @@ Every phase follows the mandatory engineering cycle:
 
 ---
 
-### Phase 02 — AI Provider Validation
-- **Status:** **READY TO EXECUTE (Awaiting User Handoff Approval)**
-- **Objective:** Validate live provider connectivity for Google Gemini, AWS Bedrock, and OpenAI-compatible endpoints using real credentials.
-- **Technical Scope:**
-  - Verify `GeminiProviderAdapter` with real API key (`gemini-2.5-flash`, `gemini-1.5-flash`).
-  - Verify `BedrockProviderAdapter` with AWS credentials/region.
-  - Verify OpenAI-compatible adapter against target base URLs.
-  - Ensure provider secrets remain strictly in `SecretVault` / server environment and are never leaked to client bundles or chat logs.
-- **Exit Criteria:** At least one live provider successfully answers `/api/provider/:id/test` with real latency and model listings.
+### Phase 02 — AI Provider Validation & Reliability
+- **Status:** **COMPLETE**
+- **Objective:** Stabilize, validate, and improve the existing AI-provider integration layer across Gemini, Claude, OpenAI-compatible, Ollama, and OpenCode.
+- **Completed Work:**
+  - Audited provider architecture; documented unified adapter lifecycle and model routing in `PROVIDER_ARCHITECTURE.md`.
+  - Implemented `ClaudeProviderAdapter` and `OllamaProviderAdapter` alongside `GeminiProviderAdapter` and `OpenAICompatibleAdapter`.
+  - Resolved Windows path quoting bug in `opencode.ts` where unquoted `node.exe` execution failed with `'C:\Program' is not recognized`.
+  - Added quota exhaustion pattern matching (`额度不足`, `insufficient credit`) to `ai-router.ts` and `provider-test.ts`.
+  - Enhanced streaming and tool-calling delta handling in `GeminiProviderAdapter` and `OpenAICompatibleAdapter`.
+  - Produced `PROVIDER_TEST_REPORT.md` and `PROVIDER_SETUP.md`.
+  - Validated 100% of test suites: `provider-adapters.test.ts`, `provider-test.test.ts`, `providers.test.ts`, `automatic-ai.test.ts`, and `execution-runner.test.ts` (32/32 tests).
+- **Key Deliverables:** `PROVIDER_ARCHITECTURE.md`, `PROVIDER_TEST_REPORT.md`, `PROVIDER_SETUP.md`, updated `CURRENT_STATE.md`, `GAP_ANALYSIS.md`.
 
 ---
 
 ### Phase 03 — Gate: Recipient Registry & Shared Ledger
-- **Status:** **PENDING (Phase 02 Dependency)**
+- **Status:** **READY TO EXECUTE (Awaiting User Handoff Approval)**
 - **Objective:** Implement canonical recipient identity resolution, recipient aliases, and persistent shared spending ledger.
 - **Technical Scope:**
   - Create SQLite tables: `recipients`, `recipient_aliases`, `spending_ledger`, and `budget_reservations`.

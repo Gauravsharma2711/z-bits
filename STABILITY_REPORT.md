@@ -145,3 +145,4 @@ No architecture rewrites, global re-branding, or Phase 02+ features were introdu
 2. **Deterministic Financial Separation:** No LLM-driven budget decisions. Gate engine and provider adapters remain isolated.
 3. **No Premature Feature Creep:** Gate persistence, SpendPass token generation, and Bitrefill fulfillment remain clean and deferred to their dedicated phases (Phases 03–05).
 4. **Local-Only Integrity:** No remote Git pushes or credentials required.
+

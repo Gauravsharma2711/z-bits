@@ -12,6 +12,7 @@ import { standaloneArgs } from "./opencode-flags.js";
 import { GeminiProviderAdapter } from "./providers/gemini-adapter.js";
 import { BedrockProviderAdapter } from "./providers/bedrock-adapter.js";
 import { OpenAICompatibleAdapter } from "./providers/openai-adapter.js";
+import { OllamaProviderAdapter } from "./providers/ollama-adapter.js";
 
 export const PROBE_TOKEN = "OPENBOT_OK";
 export const PROBE_TIMEOUT_MS = 90_000;
@@ -35,7 +36,7 @@ export function probeAllowed(lastTestedAt: string | null, now = Date.now()): boo
 function safeProbeError(message: string): string {
   if (/timed out|ETIMEDOUT/i.test(message)) return "The connection test timed out. The provider may be slow or unreachable; try again, or choose another model.";
   if (/ENOENT|not found|not installed/i.test(message)) return "The model runtime is not installed on this host, so the test could not run.";
-  if (/rate.limit|quota|usage.limit|insufficient.credit|429/i.test(message)) return "The provider reached a usage or rate limit. Wait for its allowance to reset, then test again.";
+  if (/rate.limit|quota|usage.limit|insufficient.credit|429|额度不足/i.test(message)) return "The provider reached a usage or rate limit. Wait for its allowance to reset, then test again.";
   if (/401|403|unauthorized|forbidden|rejected.*(sign|access|key)/i.test(message)) return "The provider rejected its sign-in or key. Reconnect it, then test again.";
   if (/500|502|503|504|unavailable|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|fetch failed/i.test(message)) return "The provider is unreachable or temporarily unavailable. Check the connection, then test again.";
   return "The provider did not answer the connection test. Check the connection, then test again.";
@@ -45,10 +46,26 @@ export async function probeProviderModel(model: string, extraEnv: Record<string,
   const started = Date.now();
 
   // 1. Direct Google Gemini adapter test
-  const geminiKey = extraEnv.GEMINI_API_KEY || (model.includes("gemini") ? extraEnv.OPENBOT_MODEL_API_KEY : undefined);
-  if (geminiKey || (model.startsWith("google/") || model.startsWith("gemini-"))) {
+  const geminiKey = extraEnv.GEMINI_API_KEY || (model.includes("gemini") ? extraEnv.OPENBOT_MODEL_API_KEY : undefined) || process.env.GEMINI_API_KEY;
+  if (geminiKey) {
     const gemini = new GeminiProviderAdapter(geminiKey);
     const val = await gemini.validateConfiguration({ apiKey: geminiKey, model });
+    return {
+      ok: val.ok,
+      model,
+      latencyMs: val.latencyMs ?? (Date.now() - started),
+      error: val.error ?? null,
+      testedAt: new Date().toISOString(),
+    };
+  }
+
+  // 2. Direct Ollama adapter test
+  if (model.startsWith("ollama/") || extraEnv.OPENBOT_MODEL_BASE_URL?.includes("11434")) {
+    const ollama = new OllamaProviderAdapter({
+      baseUrl: extraEnv.OPENBOT_MODEL_BASE_URL,
+      defaultModel: model.replace(/^ollama\//, ""),
+    });
+    const val = await ollama.validateConfiguration();
     return {
       ok: val.ok,
       model,

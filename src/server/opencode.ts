@@ -609,7 +609,8 @@ export class OpenCodeRunner {
       : ["run", "--auto", "--format", "json", "--model", model, ...standaloneArgs(), "--agent", run.expectedWorkKind ? "openbot-report" : "openbot", ...attachedFiles.flatMap((file) => ["--file", file]), ...(previousSession ? ["--session", previousSession] : []), "--title", `${bot.name} · Sidemates`, prompt];
     const runEnvironment = safeHostEnvironment(extraEnvironment);
     const liveOpenCode = !useClaude && liveOpenCodeAvailable(runEnvironment.PATH, Boolean(this.options.spawnProcess));
-    const child = (this.options.spawnProcess || spawn)(useClaude ? "claude" : liveOpenCode ? process.execPath : "opencode", liveOpenCode ? [OPENCODE_LIVE_PATH, ...args] : args, { cwd: workspace, env: runEnvironment, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", shell: process.platform === "win32" });
+    const isRealBatchCli = (useClaude || !liveOpenCode) && !this.options.spawnProcess;
+    const child = (this.options.spawnProcess || spawn)(useClaude ? "claude" : liveOpenCode ? process.execPath : "opencode", liveOpenCode ? [OPENCODE_LIVE_PATH, ...args] : args, { cwd: workspace, env: runEnvironment, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", ...(process.platform === "win32" && isRealBatchCli ? { shell: true } : {}) });
     this.running.set(run.id, child);
     let stdoutBuffer = "", stderr = "", responseText = "", sessionId: string | null = previousSession, lastTool = "";
     const output = new ModelOutput(useClaude ? "claude" : "opencode");
