@@ -32,9 +32,10 @@
 | **Zcash NU7 Testnet** | COMPLETE | `src/server/zcash/zcash-service.ts`, SQLite table `zcash_transactions`, Unified Addresses (`utest1...`), opaque memo (`zbits:ord_<id>`), zero PII regex audit, on-chain verification via `blockexplorer.one`. | Tested in `e2e-scenarios.test.ts` Scenario 7 (100% pass). | P0 |
 | **Dashboard** | COMPLETE | `SpendingRulesPanel.tsx` & `ZbitsOverview.tsx` fully implemented with 8 functional tabs: Overview, Constitution, Recipients, Ledger, Approvals, Purchases (with masked PINs & reveal toggle), Zcash Privacy Center, and Cryptographic Audit Log. | Tested with live Express APIs and Vite bundle. | P0 |
 | **Security & Secrets** | COMPLETE | Strict fail-closed verification, no secrets in Git, masked claim PINs, zero private keys, and single-use SpendPass lifecycle. | Certified in `SECURITY_REVIEW.md`. | P0 |
+| **PostgreSQL Persistence** | COMPLETE | `PostgresZbitsRepository`, 14 tables, row-level locking (`SELECT ... FOR UPDATE`), Render Blueprint (`render.yaml`), Docker Compose, 17/17 tests passing. | Integrated with dual-engine architecture. | P0 |
 | **Provider Compatibility** | COMPLETE | Universal provider layer (Gemini, Claude, OpenAI-compatible, Ollama, Bedrock skeleton) validated. Windows process spawning, batch CLI wrappers, and automatic AI model routing verified with 100% test coverage. | Configure real keys in `.env` as needed during later phases. | P0 |
 | **Privacy & Trust Note** | COMPLETE | Authoritative document `PRIVACY_AND_TRUST.md` answering the 4 mandatory hackathon questions. | Integrated into dashboard and documentation. | P0 |
-| **Hackathon Submission** | READY | All documentation, E2E test suite (8/8 pass), demo runbook, and verified on-chain evidence completed. | Push branch to GitHub remote and record demo. | P0 |
+| **Hackathon Submission** | COMPLETE | All documentation, E2E test suite (8/8 pass), DB test suite (17/17 pass), demo script, feedback, and verified on-chain evidence completed and pushed to GitHub with tag `v1.0.0-hackathon`. | Ready for final evaluation. | P0 |
 
 ---
 
