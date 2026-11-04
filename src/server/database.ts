@@ -87,6 +87,8 @@ import type {
   GateApprovalStatus,
   LedgerEntryStatus,
   CurrencyCode,
+  SpendPassRecord,
+  SpendPassStatus,
 } from "../shared/zbits-types.js";
 
 type Row = Record<string, string | number | null>;
@@ -1338,6 +1340,35 @@ export class OpenBotDatabase {
         remaining_monthly_budget_cents INTEGER NOT NULL,
         remaining_recipient_budget_cents INTEGER,
         created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS spendpass_tokens (
+        id TEXT PRIMARY KEY,
+        jti TEXT UNIQUE NOT NULL,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        purchase_intent_id TEXT NOT NULL REFERENCES purchase_intents(id) ON DELETE CASCADE,
+        authorization_id TEXT NOT NULL,
+        reservation_id TEXT NOT NULL REFERENCES spending_ledger(id) ON DELETE CASCADE,
+        recipient_id TEXT NOT NULL REFERENCES recipients(id) ON DELETE CASCADE,
+        agent_id TEXT NOT NULL,
+        merchant_id TEXT NOT NULL,
+        product_id TEXT,
+        denomination INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        max_amount INTEGER NOT NULL,
+        policy_version INTEGER NOT NULL,
+        key_id TEXT NOT NULL DEFAULT 'k1',
+        status TEXT NOT NULL DEFAULT 'ISSUED',
+        execution_id TEXT,
+        revocation_reason TEXT,
+        token TEXT,
+        issued_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        revoked_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(owner_id, authorization_id)
       );
     `);
     this.db.exec(`UPDATE bots SET mac_access_enabled=CAST((SELECT setting_value FROM app_settings WHERE setting_key='mac_access_enabled') AS INTEGER)`);
@@ -5723,6 +5754,213 @@ export class OpenBotDatabase {
       remainingRecipientBudgetCents: row.remaining_recipient_budget_cents !== null ? Number(row.remaining_recipient_budget_cents) : null,
       createdAt: String(row.created_at),
     }));
+  }
+
+  // ==========================================
+  // Z-BITS SPENDPASS: PERSISTENCE & CONCURRENCY
+  // ==========================================
+
+  createSpendPassToken(record: Omit<SpendPassRecord, "createdAt" | "updatedAt">): SpendPassRecord {
+    const at = now();
+    this.db.prepare(`
+      INSERT INTO spendpass_tokens
+      (id, jti, owner_id, purchase_intent_id, authorization_id, reservation_id, recipient_id, agent_id, merchant_id, product_id, denomination, currency, max_amount, policy_version, key_id, status, execution_id, revocation_reason, token, issued_at, expires_at, consumed_at, revoked_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.jti,
+      record.ownerId,
+      record.purchaseIntentId,
+      record.authorizationId,
+      record.reservationId,
+      record.recipientId,
+      record.agentId,
+      record.merchantId,
+      record.productId || null,
+      record.denomination,
+      record.currency,
+      record.maxAmount,
+      record.policyVersion,
+      record.keyId,
+      record.status,
+      record.executionId || null,
+      record.revocationReason || null,
+      record.token || null,
+      record.issuedAt,
+      record.expiresAt,
+      record.consumedAt || null,
+      record.revokedAt || null,
+      at,
+      at
+    );
+
+    return {
+      ...record,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  getSpendPassToken(id: string): SpendPassRecord | null {
+    const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE id=?").get(id) as Row;
+    if (!row) return null;
+    return this.mapSpendPassRow(row);
+  }
+
+  getSpendPassTokenByJti(jti: string): SpendPassRecord | null {
+    const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE jti=?").get(jti) as Row;
+    if (!row) return null;
+    return this.mapSpendPassRow(row);
+  }
+
+  getSpendPassTokenByAuthorizationId(authorizationId: string): SpendPassRecord | null {
+    const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE authorization_id=?").get(authorizationId) as Row;
+    if (!row) return null;
+    return this.mapSpendPassRow(row);
+  }
+
+  listSpendPassTokens(ownerId = DEFAULT_OWNER, filter?: { status?: SpendPassStatus; limit?: number }): SpendPassRecord[] {
+    const limit = filter?.limit || 50;
+    const query = filter?.status
+      ? "SELECT * FROM spendpass_tokens WHERE owner_id=? AND status=? ORDER BY created_at DESC LIMIT ?"
+      : "SELECT * FROM spendpass_tokens WHERE owner_id=? ORDER BY created_at DESC LIMIT ?";
+    const rows = (filter?.status
+      ? this.db.prepare(query).all(ownerId, filter.status, limit)
+      : this.db.prepare(query).all(ownerId, limit)) as Row[];
+    return rows.map((r) => this.mapSpendPassRow(r));
+  }
+
+  claimSpendPassToken(id: string, executionId: string): boolean {
+    const at = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE id=?").get(id) as Row;
+      if (!row) {
+        this.db.exec("COMMIT");
+        return false;
+      }
+      if (row.status !== "ISSUED") {
+        this.db.exec("COMMIT");
+        return false;
+      }
+      if (new Date(String(row.expires_at)).getTime() <= Date.now()) {
+        this.db.prepare("UPDATE spendpass_tokens SET status='EXPIRED', updated_at=? WHERE id=?").run(at, id);
+        this.db.exec("COMMIT");
+        return false;
+      }
+      // Check emergency pause
+      const constRow = this.db.prepare("SELECT emergency_pause FROM spending_constitution WHERE owner_id=?").get(String(row.owner_id)) as Row;
+      if (constRow && asBoolean(constRow.emergency_pause)) {
+        this.db.prepare("UPDATE spendpass_tokens SET status='REVOKED', revoked_at=?, revocation_reason='emergency_pause', updated_at=? WHERE id=?").run(at, id);
+        this.db.exec("COMMIT");
+        return false;
+      }
+      // Check reservation is still RESERVED
+      const resRow = this.db.prepare("SELECT status FROM spending_ledger WHERE id=?").get(String(row.reservation_id)) as Row;
+      if (!resRow || resRow.status !== "RESERVED") {
+        this.db.exec("COMMIT");
+        return false;
+      }
+
+      this.db.prepare("UPDATE spendpass_tokens SET status='CLAIMED', execution_id=?, updated_at=? WHERE id=?").run(executionId, at, id);
+      this.db.exec("COMMIT");
+      return true;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  consumeSpendPassToken(id: string, executionId: string): boolean {
+    const at = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE id=?").get(id) as Row;
+      if (!row || row.status !== "CLAIMED" || row.execution_id !== executionId) {
+        this.db.exec("COMMIT");
+        return false;
+      }
+
+      this.db.prepare("UPDATE spendpass_tokens SET status='CONSUMED', consumed_at=?, updated_at=? WHERE id=?").run(at, at, id);
+      // Settle associated budget reservation
+      this.db.prepare("UPDATE spending_ledger SET status='SETTLED', settled_at=? WHERE id=?").run(at, String(row.reservation_id));
+      this.db.prepare("UPDATE purchase_intents SET status='SETTLED', updated_at=? WHERE id=?").run(at, String(row.purchase_intent_id));
+      this.db.exec("COMMIT");
+      return true;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  revokeSpendPassToken(id: string, reason: string): boolean {
+    const at = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.db.prepare("SELECT * FROM spendpass_tokens WHERE id=?").get(id) as Row;
+      if (!row || row.status === "CONSUMED") {
+        this.db.exec("COMMIT");
+        return false;
+      }
+
+      this.db.prepare("UPDATE spendpass_tokens SET status='REVOKED', revoked_at=?, revocation_reason=?, updated_at=? WHERE id=?").run(at, reason, at, id);
+      // Release associated reservation
+      this.db.prepare("UPDATE spending_ledger SET status='RELEASED' WHERE id=? AND status='RESERVED'").run(String(row.reservation_id));
+      this.db.prepare("UPDATE purchase_intents SET status='CANCELLED', updated_at=? WHERE id=?").run(at, String(row.purchase_intent_id));
+      this.db.exec("COMMIT");
+      return true;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  revokeAllUnclaimedSpendPass(ownerId = DEFAULT_OWNER, reason = "emergency_pause"): number {
+    const at = now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const rows = this.db.prepare("SELECT id, reservation_id, purchase_intent_id FROM spendpass_tokens WHERE owner_id=? AND status='ISSUED'").all(ownerId) as Row[];
+      for (const row of rows) {
+        this.db.prepare("UPDATE spendpass_tokens SET status='REVOKED', revoked_at=?, revocation_reason=?, updated_at=? WHERE id=?").run(at, reason, at, String(row.id));
+        this.db.prepare("UPDATE spending_ledger SET status='RELEASED' WHERE id=? AND status='RESERVED'").run(String(row.reservation_id));
+        this.db.prepare("UPDATE purchase_intents SET status='CANCELLED', updated_at=? WHERE id=?").run(at, String(row.purchase_intent_id));
+      }
+      this.db.exec("COMMIT");
+      return rows.length;
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  private mapSpendPassRow(row: Row): SpendPassRecord {
+    return {
+      id: String(row.id),
+      jti: String(row.jti),
+      ownerId: String(row.owner_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      authorizationId: String(row.authorization_id),
+      reservationId: String(row.reservation_id),
+      recipientId: String(row.recipient_id),
+      agentId: String(row.agent_id),
+      merchantId: String(row.merchant_id),
+      productId: row.product_id ? String(row.product_id) : null,
+      denomination: Number(row.denomination),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      maxAmount: Number(row.max_amount),
+      policyVersion: Number(row.policy_version),
+      keyId: String(row.key_id || "k1"),
+      status: String(row.status) as SpendPassStatus,
+      executionId: row.execution_id ? String(row.execution_id) : null,
+      revocationReason: row.revocation_reason ? String(row.revocation_reason) : null,
+      token: row.token ? String(row.token) : undefined,
+      issuedAt: String(row.issued_at),
+      expiresAt: String(row.expires_at),
+      consumedAt: row.consumed_at ? String(row.consumed_at) : null,
+      revokedAt: row.revoked_at ? String(row.revoked_at) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
   }
 
   getState(threadId?: string): AppState {

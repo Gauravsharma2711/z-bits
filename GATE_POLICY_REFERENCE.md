@@ -85,3 +85,4 @@ Gate returns structured reason codes in `reasonCodes: GateReasonCode[]`:
 - **Zero Floating-Point Math:** All currency calculations are conducted in integer minor units (e.g. cents, satoshis). No floating-point division is used in budget evaluations.
 - **Fail-Closed on Unknowns:** Unrecognized merchants, unmapped recipient aliases, or unparsable denominations automatically fail closed and are denied.
 - **Atomic Transactions:** Budget reservations and approvals use SQLite `BEGIN IMMEDIATE ... COMMIT` to guarantee strict serialized execution without race conditions.
+

@@ -190,10 +190,116 @@ export interface GateEvaluationResult {
   canonicalRecipient?: CanonicalRecipient;
   reservation?: SpendingLedgerEntry;
   signedAuthorization?: SignedPurchaseAuthorization;
+  spendpass?: SpendPassRecord;
+  spendpassToken?: string;
   approvalId?: string;
   remainingDailyBudgetCents?: number;
   remainingMonthlyBudgetCents?: number;
   remainingRecipientBudgetCents?: number | null;
+}
+
+export type SpendPassStatus = "ISSUED" | "CLAIMED" | "CONSUMED" | "REVOKED" | "EXPIRED" | "RECONCILIATION_REQUIRED";
+
+export interface SpendPassClaims {
+  iss: string; // "zbits-gate"
+  aud: string; // "zbits-runner"
+  jti: string; // unique token ID
+  sub: string; // owner ID
+  agent_id: string;
+  purchase_intent_id: string;
+  authorization_id: string;
+  reservation_id: string;
+  recipient_id: string;
+  merchant_id: string;
+  product_id?: string;
+  denomination: number;
+  currency: CurrencyCode;
+  max_amount: number;
+  policy_version: number;
+  iat: number; // Unix seconds
+  nbf: number; // Unix seconds
+  exp: number; // Unix seconds
+  nonce: string;
+}
+
+export interface SpendPassRecord {
+  id: string;
+  jti: string;
+  ownerId: string;
+  purchaseIntentId: string;
+  authorizationId: string;
+  reservationId: string;
+  recipientId: string;
+  agentId: string;
+  merchantId: string;
+  productId?: string | null;
+  denomination: number;
+  currency: CurrencyCode;
+  maxAmount: number;
+  policyVersion: number;
+  keyId: string;
+  status: SpendPassStatus;
+  executionId?: string | null;
+  revocationReason?: string | null;
+  token?: string;
+  issuedAt: string;
+  expiresAt: string;
+  consumedAt?: string | null;
+  revokedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SpendPassReasonCode =
+  | "INVALID_SIGNATURE"
+  | "UNSUPPORTED_ALGORITHM"
+  | "UNKNOWN_SIGNING_KEY"
+  | "TOKEN_EXPIRED"
+  | "TOKEN_NOT_YET_VALID"
+  | "INVALID_ISSUER"
+  | "INVALID_AUDIENCE"
+  | "TOKEN_NOT_FOUND"
+  | "TOKEN_REVOKED"
+  | "TOKEN_ALREADY_CLAIMED"
+  | "TOKEN_ALREADY_CONSUMED"
+  | "RESERVATION_INVALID"
+  | "PURCHASE_INTENT_MISMATCH"
+  | "RECIPIENT_MISMATCH"
+  | "MERCHANT_MISMATCH"
+  | "PRODUCT_MISMATCH"
+  | "DENOMINATION_MISMATCH"
+  | "CURRENCY_MISMATCH"
+  | "AMOUNT_EXCEEDED"
+  | "POLICY_VERSION_MISMATCH"
+  | "EMERGENCY_PAUSE_ACTIVE"
+  | "VERIFICATION_UNAVAILABLE";
+
+export interface SpendPassExecutionContext {
+  recipientId?: string;
+  merchantId?: string;
+  productId?: string;
+  denomination?: number;
+  currency?: CurrencyCode;
+  actualAmountCents?: number;
+  purchaseIntentId?: string;
+  executionId?: string;
+}
+
+export interface SpendPassVerificationResult {
+  valid: boolean;
+  spendpassId?: string;
+  jti?: string;
+  purchaseIntentId?: string;
+  recipientId?: string;
+  merchantId?: string;
+  productId?: string;
+  denomination?: number;
+  currency?: CurrencyCode;
+  maxAmount?: number;
+  policyVersion?: number;
+  record?: SpendPassRecord;
+  reasonCodes: SpendPassReasonCode[];
+  errorMessage?: string;
 }
 
 export interface SignedPurchaseAuthorization {
@@ -212,6 +318,11 @@ export type AuditEventKind =
   | "purchase_intent_created"
   | "purchase_authorized"
   | "purchase_rejected"
+  | "spendpass_issued"
+  | "spendpass_claimed"
+  | "spendpass_consumed"
+  | "spendpass_revoked"
+  | "spendpass_rejected"
   | "runner_dispatched"
   | "runner_execution_blocked"
   | "policy_updated"

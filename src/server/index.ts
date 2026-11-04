@@ -5465,6 +5465,85 @@ app.post("/api/gate/evaluate", (request, response) => {
   }
 });
 
+// --- Z-Bits SpendPass Cryptographic Token APIs ---
+
+app.get("/api/gate/spendpass", (request, response) => {
+  const status = typeof request.query.status === "string" ? (request.query.status.toUpperCase() as any) : undefined;
+  const limit = Math.min(200, Math.max(1, parseInt(String(request.query.limit || "50"), 10) || 50));
+  const tokens = db.listSpendPassTokens("local-owner", { status, limit });
+  response.json({ tokens });
+});
+
+app.get("/api/gate/spendpass/:id", (request, response) => {
+  const tokenRecord = db.getSpendPassToken(request.params.id) || db.getSpendPassTokenByJti(request.params.id);
+  if (!tokenRecord) {
+    return response.status(404).json({ error: `SpendPass "${request.params.id}" not found.` });
+  }
+  response.json(tokenRecord);
+});
+
+app.post("/api/gate/spendpass/verify", (request, response) => {
+  try {
+    const { token, executionContext } = request.body || {};
+    if (!token || typeof token !== "string") {
+      return response.status(400).json({ error: "SpendPass compact JWT token string is required." });
+    }
+    const gate = getGateEngine(db);
+    const verification = gate.verifySpendPass(token, executionContext);
+    response.json(verification);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "SpendPass verification failed" });
+  }
+});
+
+app.post("/api/gate/spendpass/claim", (request, response) => {
+  try {
+    const { spendpassId, executionId } = request.body || {};
+    if (!spendpassId || !executionId) {
+      return response.status(400).json({ error: "Both spendpassId and executionId are required to claim token." });
+    }
+    const gate = getGateEngine(db);
+    const claimed = gate.claimSpendPass(spendpassId, executionId);
+    if (!claimed) {
+      return response.status(409).json({ error: `SpendPass "${spendpassId}" could not be claimed (already claimed, consumed, revoked, or expired).` });
+    }
+    response.json({ ok: true, spendpassId, executionId, status: "CLAIMED" });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "SpendPass claim failed" });
+  }
+});
+
+app.post("/api/gate/spendpass/consume", (request, response) => {
+  try {
+    const { spendpassId, executionId } = request.body || {};
+    if (!spendpassId || !executionId) {
+      return response.status(400).json({ error: "Both spendpassId and executionId are required to complete token consumption." });
+    }
+    const gate = getGateEngine(db);
+    const consumed = gate.completeSpendPass(spendpassId, executionId);
+    if (!consumed) {
+      return response.status(409).json({ error: `SpendPass "${spendpassId}" could not be consumed (must be in CLAIMED state with matching executionId).` });
+    }
+    response.json({ ok: true, spendpassId, executionId, status: "CONSUMED" });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "SpendPass consumption failed" });
+  }
+});
+
+app.post("/api/gate/spendpass/:id/revoke", (request, response) => {
+  try {
+    const reason = request.body?.reason || "owner_revoked";
+    const gate = getGateEngine(db);
+    const revoked = gate.revokeSpendPass(request.params.id, reason);
+    if (!revoked) {
+      return response.status(409).json({ error: `SpendPass "${request.params.id}" could not be revoked (may be already consumed or not found).` });
+    }
+    response.json({ ok: true, spendpassId: request.params.id, status: "REVOKED", reason });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "SpendPass revocation failed" });
+  }
+});
+
 app.get("/api/runner/integrations", (_request, response) => {
   response.json(getCommerceRunner().getIntegrations());
 });

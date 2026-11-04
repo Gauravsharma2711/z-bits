@@ -5,7 +5,7 @@
 **Project:** Z-Bits  
 **Tagline:** Your agents. Your rules. Your money.  
 **Upstream Base:** [PrisacariuRobert/sidemates](https://github.com/PrisacariuRobert/sidemates) (`v0.42.0`)  
-**Audit & Stability Status:** Phase 00 (Audit) COMPLETE; Phase 01 (Core Stability) COMPLETE; Phase 02 (AI Provider Integration & Reliability) COMPLETE; Phase 03 (Gate: Deterministic Financial Authorization Engine) COMPLETE
+**Audit & Stability Status:** Phase 00 (Audit) COMPLETE; Phase 01 (Core Stability) COMPLETE; Phase 02 (AI Provider Integration & Reliability) COMPLETE; Phase 03 (Gate: Deterministic Financial Authorization Engine) COMPLETE; Phase 04 (SpendPass: Signed Purchase Authorization System) COMPLETE
 
 ---
 
@@ -275,7 +275,7 @@ The following core components of the Sidemates runtime MUST remain intact:
 |---|---|---|---|
 | **RESOLVED** | Windows CLI `spawn` failure | Prevents `opencode` discovery in `providers.ts`, marking runtime unavailable in UI. | **RESOLVED IN PHASE 01**: Fixed `safeHostEnvironment()` and added conditional `shell: true` on Windows. |
 | **RESOLVED** | Windows batch quoting in `node.exe` execution | Caused `'C:\Program' is not recognized` when spawning Node.js test workers. | **RESOLVED IN PHASE 02**: Restricted `shell: true` in `opencode.ts` to batch CLIs only. |
-| **HIGH** | In-Memory Gate Ledger | Server restart clears budget and replay tracking, violating deterministic guarantees. | Migrate ledger, reservations, and SpendPass nonces to SQLite in Phase 03/04. |
+| **RESOLVED** | In-Memory Gate Ledger & State | Server restart clears budget and replay tracking, violating deterministic guarantees. | **RESOLVED IN PHASE 03 & 04**: Migrated spending constitution, recipients, aliases, spending ledger, decisions, approvals, and SpendPass tokens to persistent SQLite with atomic ACID transactions. |
 | **MEDIUM** | Bitrefill API credentials & rate limits | Live purchase or invoice polling fails if API keys or event credits are missing. | Validate Bitrefill API keys with test catalog search before issuing real orders. |
 | **MEDIUM** | Zcash NU7 Testnet tool compatibility | Outdated testnet SDKs may fail to synchronize or construct valid NU7 shielded proofs. | Use verified CLI/SDK from hackathon developer pack; verify testnet faucet balance. |
 | **LOW** | Legacy string leaks in edge dialogs | User encounters "Sidemates" in export filenames or share cards. | Polish edge dialog text in Phase 08. |
@@ -284,9 +284,9 @@ The following core components of the Sidemates runtime MUST remain intact:
 
 ## L. Recommended Next Phase
 
-**Proceed to Phase 03 — Gate: Recipient Registry & Shared Ledger:**
-1. Implement canonical recipient identity resolution (`recipient_id`) and alias normalizer.
-2. Build persistent SQLite tables for `recipients`, `recipient_aliases`, `spending_ledger`, and `budget_reservations`.
-3. Implement 2-phase atomic budget hold (`reserveBudget` -> `settleBudget` / `releaseBudget`).
-4. Enforce cross-agent cumulative spending limits across Maya, Bolt, and Sage.
+**Proceed to Phase 05 — Bitrefill Integration & Live Catalog Execution:**
+1. Implement Bitrefill Client in `src/server/runner/bitrefill-client.ts`.
+2. Connect live Bitrefill catalog search, invoice generation, and order dispatch.
+3. Validate SpendPass token claim and consumption before Bitrefill order submission.
+4. Support mock and live sandbox credentials with zero-mock enforcement when live keys are provided.
 

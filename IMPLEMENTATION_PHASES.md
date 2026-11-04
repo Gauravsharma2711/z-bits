@@ -76,20 +76,29 @@ Every phase follows the mandatory engineering cycle:
 ---
 
 ### Phase 04 — SpendPass Authorization
-- **Status:** **READY TO EXECUTE (Awaiting User Handoff Approval)**
-- **Objective:** Implement cryptographic, single-use, scoped, short-lived SpendPass authorization tokens.
-- **Technical Scope:**
-  - Create SQLite table `spendpass_tokens` tracking token status (`issued`, `claimed`, `expired`, `revoked`).
-  - Bind SpendPass to exact parameters: `recipient_id`, `merchant`, `product_id`, `denomination`, `max_price`, `nonce`, `policy_version`, `expires_at`.
-  - Implement HMAC-SHA256 signature generation and independent verification.
-  - Enforce single-use nonce invalidation so tokens cannot be replayed.
-  - Implement emergency global kill-switch revoking all active SpendPass tokens.
-- **Exit Criteria:** SpendPass tampering, replay, and expiration attacks are deterministically rejected by unit tests.
+- **Status:** **COMPLETE**
+- **Objective:** Implement cryptographic, single-use, scoped, short-lived SpendPass authorization tokens connecting Gate to Runner.
+- **Completed Work:**
+  - Migrated SQLite table `spendpass_tokens` with unique constraints (`jti`, `(owner_id, authorization_id)`).
+  - Implemented `SpendPassService` in `src/server/gate/spendpass-service.ts`:
+    - RFC 7519 compact JWT generation with base64url encoding and HMAC-SHA256 signing.
+    - Timing-safe signature comparison using `crypto.timingSafeEqual`.
+    - Key management and seamless rotation with `kid` headers.
+    - Strict algorithm allowlisting (`alg: HS256` only; `none` and unexpected algorithms rejected with `UNSUPPORTED_ALGORITHM`).
+  - Implemented persistent token state machine (`ISSUED` -> `CLAIMED` -> `CONSUMED`, `REVOKED`, `EXPIRED`).
+  - Serialized concurrency and single-use enforcement: SQLite `BEGIN IMMEDIATE ... COMMIT` atomic transitions for `claimForExecution` and `completeExecution`, preventing duplicate claims or race conditions under high concurrency.
+  - Full execution scope binding: canonical recipient, merchant, product, denomination, currency, and strictly immutable price ceiling (`actualAmountCents <= max_amount`).
+  - Automatic Gate integration: Gate auto-issues SpendPass upon `ALLOW` evaluation and owner approval resolution.
+  - Emergency Pause integration: active pause immediately blocks token verification and revokes all unclaimed tokens for the owner.
+  - Exposed Express REST endpoints: `GET /api/gate/spendpass`, `GET /api/gate/spendpass/:id`, `POST /api/gate/spendpass/verify`, `POST /api/gate/spendpass/claim`, `POST /api/gate/spendpass/consume`, and `POST /api/gate/spendpass/:id/revoke`.
+  - Created test suite with 7 subtests in `src/server/gate/spendpass.test.ts` (100% pass rate: 7/7 SpendPass suites, 14/14 combined Gate & SpendPass tests).
+  - Delivered `SPENDPASS_ARCHITECTURE.md`, `SPENDPASS_SECURITY.md`, `SPENDPASS_API.md`, and `SPENDPASS_TEST_REPORT.md`.
+- **Key Deliverables:** `SPENDPASS_ARCHITECTURE.md`, `SPENDPASS_SECURITY.md`, `SPENDPASS_API.md`, `SPENDPASS_TEST_REPORT.md`, updated `CURRENT_STATE.md`, `GAP_ANALYSIS.md`, `IMPLEMENTATION_PHASES.md`.
 
 ---
 
 ### Phase 05 — Runner & Bitrefill Fulfillment
-- **Status:** **PENDING (Phase 04 Dependency)**
+- **Status:** **READY TO EXECUTE (Awaiting User Handoff Approval)**
 - **Objective:** Build real Bitrefill purchase execution, order tracking, and delivery verification.
 - **Technical Scope:**
   - Implement server-side Bitrefill API client in `src/server/runner/bitrefill-client.ts`.

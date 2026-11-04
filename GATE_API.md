@@ -211,3 +211,4 @@ Returns recent spending ledger entries with reservation statuses (`RESERVED`, `S
 
 ### `GET /api/gate/audit`
 Returns cryptographic audit log entries with severity levels, actors, and metadata.
+

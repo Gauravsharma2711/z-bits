@@ -100,3 +100,4 @@ Gate uses SQLite (`node:sqlite`) with foreign keys and WAL mode enabled:
 | `spending_ledger` | 2-phase atomic budget reservations (`RESERVED`, `SETTLED`, `RELEASED`). |
 | `gate_approvals` | Owner review queue for transactions exceeding thresholds or for untrusted recipients. |
 | `gate_decisions` | Immutable decision logs storing machine-readable reason codes and budget snapshots. |
+

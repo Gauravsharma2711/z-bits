@@ -25,11 +25,16 @@ import type {
   GateDecisionRecord,
   GateEvaluationResult,
   SignedPurchaseAuthorization,
+  SpendPassRecord,
+  SpendPassStatus,
+  SpendPassVerificationResult,
+  SpendPassExecutionContext,
   AuditEvent,
   GateReasonCode,
   CurrencyCode,
 } from "../../shared/zbits-types.js";
 import type { OpenBotDatabase } from "../database.js";
+import { SpendPassService } from "./spendpass-service.js";
 
 export const DEFAULT_SPENDING_POLICY: SpendingPolicy = {
   enabled: true,
@@ -44,6 +49,7 @@ export const DEFAULT_SPENDING_POLICY: SpendingPolicy = {
 
 export class GateEngine {
   private db?: OpenBotDatabase;
+  private spendPassService: SpendPassService;
   private policy: SpendingPolicy;
   private readonly secretKey: string;
   private readonly processedIntents = new Map<string, { timestamp: number; digest: string; result?: GateEvaluationResult }>();
@@ -72,6 +78,8 @@ export class GateEngine {
       this.secretKey = (typeof policyOrSecret === "string" ? policyOrSecret : secretKey) || process.env.GATE_SIGNING_SECRET || "zbits-gate-deterministic-secret-key-v1";
     }
 
+    this.spendPassService = new SpendPassService(this.db);
+
     // Initialize in-memory recipient registry fallback
     const selfRec: CanonicalRecipient = {
       id: "rec_self",
@@ -90,6 +98,7 @@ export class GateEngine {
 
   public setDatabase(db: OpenBotDatabase): void {
     this.db = db;
+    this.spendPassService.setDatabase(db);
   }
 
   public getDatabase(): OpenBotDatabase | undefined {
@@ -200,6 +209,10 @@ export class GateEngine {
 
   public setEmergencyPause(paused: boolean, ownerId = "local-owner", actor = "user"): boolean {
     this.updateConstitution(ownerId, { emergencyPause: paused }, actor);
+    if (paused) {
+      const revokedCount = this.spendPassService.revokeAllUnclaimed(ownerId, "emergency_pause");
+      this.recordAudit("policy_updated", "warning", actor, { action: "emergency_pause_active", revokedSpendPasses: revokedCount });
+    }
     return paused;
   }
 
@@ -575,6 +588,7 @@ export class GateEngine {
     let reservation: SpendingLedgerEntry | undefined;
     if (this.db) {
       this.db.savePurchaseIntent(intent, ownerId);
+      this.db.updatePurchaseIntentStatus(intent.intentId, "AUTHORIZED");
       reservation = this.db.reserveBudget({
         ownerId,
         recipientId: canonicalRecipient.id,
@@ -616,6 +630,20 @@ export class GateEngine {
     const signedAuthorization = this.signAuthorization(intent);
     this.recordAudit("purchase_authorized", "info", intent.botId, { intent, signedAuthorization, reservationId: reservation?.id });
 
+    let spendpassRecord: SpendPassRecord | undefined;
+    let spendpassTokenStr: string | undefined;
+    try {
+      const sp = this.spendPassService.issueSpendPass({
+        authorizationId: signedAuthorization.authorizationId,
+        purchaseIntentId: intent.intentId,
+        ownerId,
+      });
+      spendpassRecord = sp.record;
+      spendpassTokenStr = sp.token;
+    } catch (spErr: any) {
+      console.warn("[GateEngine] SpendPass auto-issuance notice:", spErr?.message || spErr);
+    }
+
     const result: GateEvaluationResult = {
       allowed: true,
       requiresUserApproval: false,
@@ -627,6 +655,8 @@ export class GateEngine {
       canonicalRecipient,
       reservation,
       signedAuthorization,
+      spendpass: spendpassRecord,
+      spendpassToken: spendpassTokenStr,
       remainingDailyBudgetCents: constitution.dailyBudgetCents - (currentDailySpent + intent.amountCents),
       remainingMonthlyBudgetCents: constitution.monthlyBudgetCents - (currentMonthlySpent + intent.amountCents),
       remainingRecipientBudgetCents: canonicalRecipient.recipientLimitCents ? canonicalRecipient.recipientLimitCents - (currentRecipientSpent + intent.amountCents) : null,
@@ -680,6 +710,7 @@ export class GateEngine {
         throw new Error(`Cannot approve: monthly budget has been exceeded while waiting for approval.`);
       }
 
+      this.db.updatePurchaseIntentStatus(intent.intentId, "AUTHORIZED");
       const reservation = this.db.reserveBudget({
         ownerId: resolved.ownerId,
         recipientId: recipient?.id || "rec_self",
@@ -690,8 +721,33 @@ export class GateEngine {
         ttlMinutes: 15,
       });
 
+      this.db.recordGateDecision({
+        ownerId: resolved.ownerId,
+        purchaseIntentId: intent.intentId,
+        decision: "ALLOW",
+        reasonCodes: ["ALLOWED_UNDER_THRESHOLD"],
+        policyVersion: constitution.policyVersion,
+        remainingDailyBudgetCents: constitution.dailyBudgetCents - (spend.dailySpentCents + intent.amountCents),
+        remainingMonthlyBudgetCents: constitution.monthlyBudgetCents - (spend.monthlySpentCents + intent.amountCents),
+        remainingRecipientBudgetCents: recipient?.recipientLimitCents ? recipient.recipientLimitCents - intent.amountCents : null,
+      });
+
       const signedAuthorization = this.signAuthorization(intent);
       this.recordAudit("purchase_authorized", "info", resolvedBy, { intent, signedAuthorization, approvedBy: resolvedBy });
+
+      let spendpassRecord: SpendPassRecord | undefined;
+      let spendpassTokenStr: string | undefined;
+      try {
+        const sp = this.spendPassService.issueSpendPass({
+          authorizationId: signedAuthorization.authorizationId,
+          purchaseIntentId: intent.intentId,
+          ownerId: resolved.ownerId,
+        });
+        spendpassRecord = sp.record;
+        spendpassTokenStr = sp.token;
+      } catch (spErr: any) {
+        console.warn("[GateEngine] SpendPass issuance in resolveApproval notice:", spErr?.message || spErr);
+      }
 
       return {
         allowed: true,
@@ -704,6 +760,8 @@ export class GateEngine {
         canonicalRecipient: recipient || undefined,
         reservation,
         signedAuthorization,
+        spendpass: spendpassRecord,
+        spendpassToken: spendpassTokenStr,
       };
     } else {
       const approval = this.inMemoryApprovals.get(approvalId);
@@ -740,6 +798,47 @@ export class GateEngine {
     const expected = this.createSignatureString(auth.authorizationId, auth.intentId, auth.intentDigest, auth.authorizedAmountCents, auth.currency, auth.authorizedAt, auth.expiresAt);
     const calculated = createHmac("sha256", this.secretKey).update(expected).digest("hex");
     return auth.signature === calculated && Date.parse(auth.expiresAt) > Date.now();
+  }
+
+  // ==========================================
+  // SPENDPASS TOKEN DELEGATIONS
+  // ==========================================
+
+  public getSpendPassService(): SpendPassService {
+    return this.spendPassService;
+  }
+
+  public issueSpendPass(input: {
+    authorizationId: string;
+    purchaseIntentId?: string;
+    ownerId?: string;
+    ttlSeconds?: number;
+  }): { record: SpendPassRecord; token: string } {
+    return this.spendPassService.issueSpendPass(input);
+  }
+
+  public verifySpendPass(token: string, executionContext?: SpendPassExecutionContext): SpendPassVerificationResult {
+    return this.spendPassService.verifySpendPass(token, executionContext);
+  }
+
+  public claimSpendPass(spendpassId: string, executionId: string): boolean {
+    return this.spendPassService.claimForExecution(spendpassId, executionId);
+  }
+
+  public completeSpendPass(spendpassId: string, executionId: string): boolean {
+    return this.spendPassService.completeExecution(spendpassId, executionId);
+  }
+
+  public revokeSpendPass(spendpassId: string, reason = "owner_revocation"): boolean {
+    return this.spendPassService.revokeSpendPass(spendpassId, reason);
+  }
+
+  public listSpendPassTokens(ownerId?: string, filter?: { status?: SpendPassStatus; limit?: number }): SpendPassRecord[] {
+    return this.spendPassService.listSpendPasses(ownerId, filter);
+  }
+
+  public getSpendPassToken(spendpassId: string): SpendPassRecord | null {
+    return this.spendPassService.getSpendPass(spendpassId);
   }
 
   private signAuthorization(intent: PurchaseIntent): SignedPurchaseAuthorization {
