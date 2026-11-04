@@ -5303,27 +5303,162 @@ app.post("/api/channels/discord/test", async (_request, response) => {
 });
 
 // --- Z-Bits Gate & Runner APIs ---
+app.get("/api/gate/constitution", (_request, response) => {
+  const gate = getGateEngine(db);
+  const constitution = gate.getConstitution("local-owner");
+  const spend = db.calculateSpend("local-owner");
+  response.json({
+    constitution,
+    spend,
+  });
+});
+
+app.put("/api/gate/constitution", (request, response) => {
+  try {
+    const gate = getGateEngine(db);
+    const updated = gate.updateConstitution("local-owner", request.body, "owner");
+    response.json({ ok: true, constitution: updated });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Invalid constitution update" });
+  }
+});
+
+app.patch("/api/gate/constitution", (request, response) => {
+  try {
+    const gate = getGateEngine(db);
+    const updated = gate.updateConstitution("local-owner", request.body, "owner");
+    response.json({ ok: true, constitution: updated });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Invalid constitution update" });
+  }
+});
+
 app.get("/api/gate/policy", (_request, response) => {
-  response.json(getGateEngine().getPolicy());
+  response.json(getGateEngine(db).getPolicy());
 });
 
 app.patch("/api/gate/policy", (request, response) => {
   try {
-    getGateEngine().updatePolicy(request.body, "user");
-    response.json({ ok: true, policy: getGateEngine().getPolicy() });
+    getGateEngine(db).updatePolicy(request.body, "user");
+    response.json({ ok: true, policy: getGateEngine(db).getPolicy() });
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "Invalid policy update" });
   }
 });
 
+app.post("/api/gate/emergency-pause", (request, response) => {
+  try {
+    const paused = Boolean(request.body.paused !== undefined ? request.body.paused : true);
+    const gate = getGateEngine(db);
+    gate.setEmergencyPause(paused, "local-owner", "owner");
+    response.json({ ok: true, emergencyPause: paused });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to toggle emergency pause" });
+  }
+});
+
+app.get("/api/gate/recipients", (_request, response) => {
+  const recipients = db.listRecipients("local-owner");
+  const recipientsWithAliases = recipients.map((r) => {
+    const aliases = db.listRecipientAliases(r.id);
+    const spend = db.calculateSpend("local-owner", r.id);
+    return {
+      ...r,
+      aliases,
+      spentCents: spend.recipientSpentCents,
+      remainingLimitCents: r.recipientLimitCents ? Math.max(0, r.recipientLimitCents - spend.recipientSpentCents) : null,
+    };
+  });
+  response.json(recipientsWithAliases);
+});
+
+app.post("/api/gate/recipients", (request, response) => {
+  try {
+    const parsed = z.object({
+      displayName: z.string().min(1).max(120),
+      trusted: z.boolean().optional(),
+      recipientLimitCents: z.number().int().nonnegative().nullable().optional(),
+      status: z.enum(["ACTIVE", "PENDING", "BLOCKED"]).optional(),
+      aliases: z.array(z.string()).optional(),
+    }).parse(request.body);
+
+    const rec = db.createRecipient("local-owner", parsed);
+    if (parsed.aliases && parsed.aliases.length > 0) {
+      for (const a of parsed.aliases) {
+        try { db.addRecipientAlias("local-owner", rec.id, a, "user"); } catch {}
+      }
+    }
+    const aliases = db.listRecipientAliases(rec.id);
+    response.status(201).json({ ...rec, aliases });
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Invalid recipient creation" });
+  }
+});
+
+app.put("/api/gate/recipients/:id", (request, response) => {
+  try {
+    const updated = db.updateRecipient(request.params.id, request.body);
+    if (!updated) return response.status(404).json({ error: "Recipient not found" });
+    response.json(updated);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to update recipient" });
+  }
+});
+
+app.post("/api/gate/recipients/:id/aliases", (request, response) => {
+  try {
+    const aliasStr = String(request.body.alias || "").trim();
+    if (!aliasStr) return response.status(400).json({ error: "Alias is required" });
+    const added = db.addRecipientAlias("local-owner", request.params.id, aliasStr, "user");
+    response.status(201).json(added);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to add alias (it may already be registered)" });
+  }
+});
+
+app.get("/api/gate/approvals", (request, response) => {
+  const status = typeof request.query.status === "string" ? (request.query.status.toUpperCase() as any) : undefined;
+  const approvals = db.listGateApprovals("local-owner", status);
+  const approvalsWithIntents = approvals.map((appr) => {
+    const intent = db.getPurchaseIntent(appr.purchaseIntentId);
+    return {
+      ...appr,
+      intent,
+    };
+  });
+  response.json(approvalsWithIntents);
+});
+
+app.post("/api/gate/approvals/:id/resolve", (request, response) => {
+  try {
+    const decision = request.body.decision === "APPROVED" ? "APPROVED" : "REJECTED";
+    const gate = getGateEngine(db);
+    const result = gate.resolveApproval(request.params.id, decision, "owner");
+    response.json(result);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to resolve approval" });
+  }
+});
+
+app.get("/api/gate/ledger", (request, response) => {
+  const limit = Math.min(200, Math.max(1, parseInt(String(request.query.limit || "50"), 10) || 50));
+  const ledger = db.listSpendingLedger("local-owner", limit);
+  const spend = db.calculateSpend("local-owner");
+  response.json({
+    ledger,
+    spend,
+  });
+});
+
 app.get("/api/gate/audit", (request, response) => {
   const limit = Math.min(100, Math.max(1, parseInt(String(request.query.limit || "50"), 10) || 50));
-  response.json(getGateEngine().getAuditLog(limit));
+  response.json(getGateEngine(db).getAuditLog(limit));
 });
 
 app.post("/api/gate/evaluate", (request, response) => {
   try {
-    const evaluation = getGateEngine().evaluate(request.body);
+    const gate = getGateEngine(db);
+    const evaluation = gate.evaluate(request.body, "local-owner");
     response.json(evaluation);
   } catch (error) {
     response.status(400).json({ error: error instanceof Error ? error.message : "Gate evaluation failed" });
@@ -5335,11 +5470,13 @@ app.get("/api/runner/integrations", (_request, response) => {
 });
 
 app.get("/api/zbits/overview", async (_request, response) => {
-  const gate = getGateEngine();
+  const gate = getGateEngine(db);
   const runner = getCommerceRunner();
   const bots = db.listBots();
   const providerStatus = await readProviderStatus(db);
   const pendingApprovals = db.listApprovals().filter((a: any) => a.status === "pending");
+  const pendingGateApprovals = db.listGateApprovals("local-owner", "PENDING");
+  const spend = db.calculateSpend("local-owner");
 
   response.json({
     brand: {
@@ -5348,7 +5485,10 @@ app.get("/api/zbits/overview", async (_request, response) => {
       version: "1.0.0",
     },
     gate: {
+      constitution: gate.getConstitution("local-owner"),
       policy: gate.getPolicy(),
+      spend,
+      pendingApprovalsCount: pendingGateApprovals.length,
       recentAuditCount: gate.getAuditLog(100).length,
     },
     runner: {

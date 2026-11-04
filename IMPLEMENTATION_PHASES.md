@@ -56,20 +56,27 @@ Every phase follows the mandatory engineering cycle:
 ---
 
 ### Phase 03 — Gate: Recipient Registry & Shared Ledger
-- **Status:** **READY TO EXECUTE (Awaiting User Handoff Approval)**
-- **Objective:** Implement canonical recipient identity resolution, recipient aliases, and persistent shared spending ledger.
-- **Technical Scope:**
-  - Create SQLite tables: `recipients`, `recipient_aliases`, `spending_ledger`, and `budget_reservations`.
-  - Implement recipient alias normalizer (phone, email, handle, nicknames) mapping to canonical `recipient_id`.
-  - Implement atomic budget reservation: 2-phase hold and release mechanism to prevent race conditions across concurrent requests.
-  - Enforce owner-level limits (per-order, daily, monthly) and per-recipient cumulative spending limits.
-  - Unit test alias resolution, cross-agent cumulative spending, and over-limit rejections.
-- **Exit Criteria:** Maya and Bolt intents for different aliases of the same recipient hit the same canonical budget and block over-limit spending.
+- **Status:** **COMPLETE**
+- **Objective:** Implement canonical recipient identity resolution, recipient aliases, persistent shared spending ledger, deterministic spending constitution, and atomic budget reservations.
+- **Completed Work:**
+  - Migrated 7 persistent SQLite tables: `spending_constitution`, `recipients`, `recipient_aliases`, `purchase_intents`, `spending_ledger`, `gate_approvals`, `gate_decisions`.
+  - Re-architected `GateEngine` with 100% deterministic code; zero LLM reasoning in financial authorization.
+  - Implemented fail-closed Canonical Recipient Registry and whitespace/punctuation/case normalizer (`normalizeAlias`).
+  - Implemented cross-agent shared spending ledger accounting: all agents (Maya, Bolt, Sage) draw against owner-level daily/monthly caps and recipient-level caps.
+  - Implemented atomic 2-phase reservation hold (`reserveBudget` -> `settleBudget` / `releaseBudget`) using SQLite transactions.
+  - Implemented Idempotency Manager detecting replays (`DUPLICATE_REQUEST`) and payload tampering (`IDEMPOTENCY_CONFLICT`).
+  - Implemented Emergency Pause kill-switch immediately halting all spending with `EMERGENCY_PAUSE_ACTIVE`.
+  - Implemented Owner Approval Workflow (`gate_approvals` table, `/api/gate/approvals/:id/resolve`, re-evaluating fresh budget upon approval).
+  - Exposed comprehensive Express REST endpoints (`/api/gate/constitution`, `/api/gate/recipients`, `/api/gate/evaluate`, `/api/gate/approvals`, `/api/gate/ledger`, `/api/gate/emergency-pause`).
+  - Enhanced frontend `SpendingRulesPanel.tsx` with tabs for Constitution, Recipients Registry, Pending Approvals, Ledger, and Cryptographic Audit.
+  - Created test suite with 7 subtests in `src/server/gate/gate-engine.test.ts` (including the mandatory Maya $300 + Bolt $250 > $500 cap test).
+  - Delivered `GATE_ARCHITECTURE.md`, `GATE_POLICY_REFERENCE.md`, `GATE_API.md`, and `GATE_TEST_REPORT.md`.
+- **Key Deliverables:** `GATE_ARCHITECTURE.md`, `GATE_POLICY_REFERENCE.md`, `GATE_API.md`, `GATE_TEST_REPORT.md`, updated `CURRENT_STATE.md`, `GAP_ANALYSIS.md`, `IMPLEMENTATION_PHASES.md`.
 
 ---
 
 ### Phase 04 — SpendPass Authorization
-- **Status:** **PENDING (Phase 03 Dependency)**
+- **Status:** **READY TO EXECUTE (Awaiting User Handoff Approval)**
 - **Objective:** Implement cryptographic, single-use, scoped, short-lived SpendPass authorization tokens.
 - **Technical Scope:**
   - Create SQLite table `spendpass_tokens` tracking token status (`issued`, `claimed`, `expired`, `revoked`).
