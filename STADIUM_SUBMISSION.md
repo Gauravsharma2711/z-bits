@@ -15,11 +15,11 @@
 - **Privacy Track (Zcash)**
 
 ### Public Repository URL
-`https://github.com/Gauravsharma2711/z-bits`
+`https://github.com/Gauravsharma2711/z-bits` (Release Tag: `v1.0.0-hackathon` / Commit `2592063`)
 
 ### Live Application / Deployment URL
 - **Production Web Service:** `https://z-bits.onrender.com` (Render Managed Web Service & PostgreSQL)
-- **Local Studio:** `http://localhost:5173/` (Zero-config local mode or Docker)
+- **Local Studio & Web UI:** `http://127.0.0.1:4311/` (Dev Web UI: `http://127.0.0.1:4310/`)
 
 ### Demo Video URL (2–3 Minutes)
 `https://youtu.be/zbits-hackathon-demo` *(or local runbook in `DEMO_RUNBOOK.md`)*
