@@ -35,7 +35,7 @@ test("never a model that fails for teammates or trains on prompts", () => {
 });
 
 test("the strongest AI comes first for big jobs; disconnected and resting ones are skipped", () => {
-  assert.deepEqual(rankAi([opencode, google, openai, claude], "heavy").map((pick) => pick.instanceId), ["local-claude", "local-openai", "local-opencode", "local-google"]);
+  assert.deepEqual(rankAi([opencode, google, openai, claude], "heavy").map((pick) => pick.instanceId), ["local-claude", "local-openai", "local-google", "local-opencode"]);
   assert.deepEqual(rankAi([{ ...claude, connected: false }, opencode], "heavy"), [{ instanceId: "local-opencode", model: "opencode-go/deepseek-v4.1-flash" }]);
   assert.deepEqual(rankAi([claude, openai], "heavy", (id) => id === "local-claude").map((pick) => pick.model), ["openai/gpt-5.6"]);
   assert.deepEqual(rankAi([{ ...opencode, models: ["opencode/mimo-v2.5-free"] }], "light"), [], "nothing usable means no pick");
