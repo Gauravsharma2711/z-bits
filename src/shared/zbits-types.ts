@@ -331,6 +331,13 @@ export type AuditEventKind =
   | "runner_purchase_uncertain"
   | "runner_delivery_confirmed"
   | "runner_settlement_completed"
+  | "bounty_event_created"
+  | "bounty_event_validated"
+  | "bounty_reward_initiated"
+  | "bounty_reward_completed"
+  | "bounty_reward_rejected"
+  | "maya_intent_parsed"
+  | "maya_proposal_generated"
   | "policy_updated"
   | "credential_accessed";
 
@@ -470,4 +477,100 @@ export interface RunnerExecutionResult {
   errorMessage?: string;
   invoice?: MerchantInvoiceRecord;
   execution?: RunnerExecutionRecord;
+}
+
+// ==========================================
+// PHASE 06: AGENT WORKFLOWS (MAYA & BOLT)
+// ==========================================
+
+export type BountySource = "manual" | "github_issue" | "github_pr" | "milestone";
+export type BountyStatus = "PENDING" | "AUTHORIZED" | "EXECUTED" | "REJECTED" | "FAILED";
+
+export interface BountyEvent {
+  id: string;
+  ownerId: string;
+  contributorAlias: string;
+  contributorId?: string | null;
+  rewardAmountCents: number;
+  currency: CurrencyCode;
+  reason: string;
+  source: BountySource;
+  sourceRef?: string | null;
+  idempotencyKey: string;
+  purchaseIntentId?: string | null;
+  executionId?: string | null;
+  status: BountyStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MayaIntentExtraction {
+  rawQuery: string;
+  recipientAlias?: string;
+  canonicalRecipientId?: string;
+  productQuery?: string;
+  productId?: string;
+  denominationCents?: number;
+  currency: CurrencyCode;
+  maxAmountCents?: number;
+  occasion?: string;
+  instructions?: string;
+  isAmbiguous: boolean;
+  missingFields: string[];
+  needsClarification: boolean;
+  clarificationPrompt?: string;
+}
+
+export interface MayaPurchaseProposal {
+  proposalId: string;
+  recipientName: string;
+  recipientId: string;
+  productName: string;
+  productId: string;
+  denominationCents: number;
+  estimatedPriceCents: number;
+  currency: CurrencyCode;
+  merchant: string;
+  requiresApproval: boolean;
+  notes?: string;
+}
+
+export interface MayaWorkflowResult {
+  success: boolean;
+  decision: GateDecisionOutcome;
+  intent?: PurchaseIntent;
+  spendpassId?: string;
+  executionId?: string;
+  execution?: RunnerExecutionRecord;
+  executionResult?: RunnerExecutionResult;
+  runnerResult?: RunnerExecutionResult;
+  reasonCodes: string[];
+  message: string;
+  deliveryRef?: string;
+  approvalId?: string;
+}
+
+export interface BoltBountyValidation {
+  valid: boolean;
+  event?: BountyEvent;
+  contributorName?: string;
+  canonicalContributorId?: string;
+  eligibleProducts?: BitrefillProduct[];
+  reasonCodes: string[];
+  errorMessage?: string;
+}
+
+export interface BoltWorkflowResult {
+  success: boolean;
+  bountyId: string;
+  decision: GateDecisionOutcome;
+  intent?: PurchaseIntent;
+  spendpassId?: string;
+  execution?: RunnerExecutionRecord;
+  executionResult?: RunnerExecutionResult;
+  runnerResult?: RunnerExecutionResult;
+  reasonCodes: string[];
+  message: string;
+  deliveryRef?: string;
+  approvalId?: string;
 }

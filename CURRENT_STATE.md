@@ -5,7 +5,7 @@
 **Project:** Z-Bits  
 **Tagline:** Your agents. Your rules. Your money.  
 **Upstream Base:** [PrisacariuRobert/sidemates](https://github.com/PrisacariuRobert/sidemates) (`v0.42.0`)  
-**Audit & Stability Status:** Phase 00 (Audit) COMPLETE; Phase 01 (Core Stability) COMPLETE; Phase 02 (AI Provider Integration & Reliability) COMPLETE; Phase 03 (Gate: Deterministic Financial Authorization Engine) COMPLETE; Phase 04 (SpendPass: Signed Purchase Authorization System) COMPLETE; Phase 05 (Runner: Secure Bitrefill Purchase Execution) COMPLETE
+**Audit & Stability Status:** Phase 00 (Audit) COMPLETE; Phase 01 (Core Stability) COMPLETE; Phase 02 (AI Provider Integration & Reliability) COMPLETE; Phase 03 (Gate: Deterministic Financial Authorization Engine) COMPLETE; Phase 04 (SpendPass: Signed Purchase Authorization System) COMPLETE; Phase 05 (Runner: Secure Bitrefill Purchase Execution) COMPLETE; Phase 06 (Maya & Bolt Agent Workflows and Commerce Integration) COMPLETE
 
 ---
 
@@ -284,13 +284,15 @@ The following core components of the Sidemates runtime MUST remain intact:
 
 ## L. Recommended Next Phase
 
-### Completed Phase 05 Deliverables (Runner & Bitrefill Execution)
-1. Built `BitrefillClient` (`src/server/runner/bitrefill-client.ts`) with live REST API support and high-fidelity sandbox testing fallback.
-2. Implemented `CommerceRunner` (`src/server/runner/commerce-runner.ts`) enforcing SpendPass verification, atomic claim (`claimSpendPass`), order dispatch, bounded delivery status polling, and post-delivery settlement.
-3. Created SQLite tables `runner_executions` and `runner_invoices` in `src/server/database.ts` with complete repository methods.
-4. Added Runner REST API endpoints in `src/server/index.ts` (`/api/runner/products`, `/api/runner/execute`, `/api/runner/executions`, `/api/runner/invoices`).
-5. Completed comprehensive automated test suite `src/server/runner/runner.test.ts` (16 tests, 100% pass rate).
-6. Documented `RUNNER_ARCHITECTURE.md`, `BITREFILL_INTEGRATION.md`, `RUNNER_SECURITY.md`, `RUNNER_TEST_REPORT.md`, and `BITREFILL_EVIDENCE.md`.
+### Completed Phase 06 Deliverables (Maya & Bolt Agent Workflows and Commerce Integration)
+1. Implemented Maya Concierge Service (`src/server/agents/maya-workflow.ts`) with NLP intent extraction, alias resolution, proposal generation, intent building, and execution tracking.
+2. Implemented Bolt Bounty Service (`src/server/agents/bolt-workflow.ts`) with idempotent intake, contributor validation, reward packaging, Gate evaluation, and Runner execution.
+3. Implemented agent internal tools with strict permission boundaries (`src/server/agents/agent-tools.ts`).
+4. Exposed tools in OpenCode workspace preparation (`src/server/workspace.ts`) and Claude MCP tools (`src/server/claude-mcp.mjs`).
+5. Mounted agent API endpoints in `src/server/index.ts`.
+6. Created SQLite `bounty_events` schema migration and repository methods in `src/server/database.ts`.
+7. Authored comprehensive test suite `src/server/agents/agents-workflow.test.ts` (18 tests, 100% pass; 48/48 across project).
+8. Documented `MAYA_ARCHITECTURE.md`, `BOLT_ARCHITECTURE.md`, `AGENT_SECURITY.md`, and `AGENT_WORKFLOW_TEST_REPORT.md`.
 
-**Ready for Phase 06 — Autonomous Agent Personas & Multi-Agent Coordination.**
+**Ready for Phase 07 — Zcash Shielded Multi-Agent Funding & Transaction Architecture.**
 

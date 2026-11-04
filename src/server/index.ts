@@ -45,6 +45,9 @@ import { fetchGalleryTeammate, exportBot, importBot } from "./sharing.js";
 import { ProviderConnectionManager, readProviderStatus, latestProviderStatus } from "./providers.js";
 import { getGateEngine } from "./gate/gate-engine.js";
 import { getCommerceRunner } from "./runner/commerce-runner.js";
+import { getMayaWorkflow } from "./agents/maya-workflow.js";
+import { getBoltWorkflow } from "./agents/bolt-workflow.js";
+import { executeAgentTool } from "./agents/agent-tools.js";
 import { DEFAULT_ZBITS_PERSONAS, getBitDisplayName } from "../shared/zbits-personas.js";
 import { once } from "node:events";
 import { ChatGptPlan } from "./chatgpt-plan.js";
@@ -4002,6 +4005,15 @@ app.post("/api/internal/tools", async (request, response) => {
   };
   try {
     new WorkflowValidation(db).assertRun(runId);
+    if (action.startsWith("maya_") || action.startsWith("bolt_")) {
+      try {
+        const toolResult = await executeAgentTool(action, args, { botId, runId, ownerId: "local-owner" }, db);
+        broadcast();
+        return response.json(toolResult);
+      } catch (toolError) {
+        return response.status(400).json({ error: toolError instanceof Error ? toolError.message : "Agent tool execution failed." });
+      }
+    }
     if (action === "skill_propose") {
       try {
         const { steps: _steps, version: _version, ...skill } = parseAuthoredSkill(args);
@@ -5656,6 +5668,138 @@ app.post("/api/runner/invoices/:id/poll", async (request, response) => {
     response.json(invoice);
   } catch (error) {
     response.status(500).json({ error: error instanceof Error ? error.message : "Failed to poll invoice" });
+  }
+});
+
+// --- Z-Bits Maya & Bolt Agent Workflow APIs ---
+
+app.post("/api/agents/maya/parse", async (request, response) => {
+  try {
+    const { query } = request.body || {};
+    if (!query || typeof query !== "string") {
+      return response.status(400).json({ error: "query string is required." });
+    }
+    const maya = getMayaWorkflow(db);
+    const extraction = await maya.parseRequest(query, "local-owner");
+    response.json(extraction);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to parse Maya request" });
+  }
+});
+
+app.post("/api/agents/maya/proposal", async (request, response) => {
+  try {
+    const { recipientAlias, productQuery, denominationCents, currency } = request.body || {};
+    if (!recipientAlias || !productQuery) {
+      return response.status(400).json({ error: "recipientAlias and productQuery are required." });
+    }
+    const maya = getMayaWorkflow(db);
+    const proposal = await maya.createProposal({
+      recipientAlias,
+      productQuery,
+      denominationCents,
+      currency,
+      ownerId: "local-owner",
+    });
+    response.json(proposal);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to generate proposal" });
+  }
+});
+
+app.post("/api/agents/maya/execute", async (request, response) => {
+  try {
+    const { recipientAlias, productId, denominationCents, currency, occasion, instructions } = request.body || {};
+    if (!recipientAlias || !productId || typeof denominationCents !== "number") {
+      return response.status(400).json({ error: "recipientAlias, productId, and denominationCents are required." });
+    }
+    const maya = getMayaWorkflow(db);
+    const result = await maya.submitPurchase({
+      recipientAlias,
+      productId,
+      denominationCents,
+      currency,
+      occasion,
+      instructions,
+      ownerId: "local-owner",
+    });
+    const statusCode = result.decision === "DENY" ? 403 : result.decision === "REQUIRE_APPROVAL" ? 202 : 200;
+    response.status(statusCode).json(result);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Maya execution failed" });
+  }
+});
+
+app.post("/api/agents/bolt/bounties", (request, response) => {
+  try {
+    const { contributorAlias, rewardAmountCents, reason, currency, source, sourceRef, idempotencyKey } = request.body || {};
+    if (!contributorAlias || typeof rewardAmountCents !== "number" || !reason) {
+      return response.status(400).json({ error: "contributorAlias, rewardAmountCents, and reason are required." });
+    }
+    const bolt = getBoltWorkflow(db);
+    const event = bolt.createBountyEvent({
+      contributorAlias,
+      rewardAmountCents,
+      reason,
+      currency,
+      source,
+      sourceRef,
+      idempotencyKey,
+      ownerId: "local-owner",
+    });
+    response.json(event);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to create bounty event" });
+  }
+});
+
+app.get("/api/agents/bolt/bounties", (request, response) => {
+  try {
+    const bolt = getBoltWorkflow(db);
+    const limit = Math.min(200, Math.max(1, parseInt(String(request.query.limit || "50"), 10) || 50));
+    const bounties = bolt.listBounties("local-owner", limit);
+    response.json({ bounties });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to list bounties" });
+  }
+});
+
+app.get("/api/agents/bolt/bounties/:id", (request, response) => {
+  try {
+    const bolt = getBoltWorkflow(db);
+    const bounty = bolt.getBounty(request.params.id) || bolt.getBountyByIdempotencyKey(request.params.id);
+    if (!bounty) {
+      return response.status(404).json({ error: `Bounty "${request.params.id}" not found.` });
+    }
+    response.json(bounty);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get bounty" });
+  }
+});
+
+app.post("/api/agents/bolt/bounties/:id/validate", async (request, response) => {
+  try {
+    const bolt = getBoltWorkflow(db);
+    const validation = await bolt.validateBountyEvent(request.params.id, "local-owner");
+    response.json(validation);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to validate bounty" });
+  }
+});
+
+app.post("/api/agents/bolt/bounties/:id/process", async (request, response) => {
+  try {
+    const { productId } = request.body || {};
+    const bolt = getBoltWorkflow(db);
+    const result = await bolt.processReward({
+      bountyId: request.params.id,
+      productId,
+      ownerId: "local-owner",
+    });
+    const statusCode = result.decision === "DENY" ? 403 : result.decision === "REQUIRE_APPROVAL" ? 202 : 200;
+    response.status(statusCode).json(result);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to process bounty reward" });
   }
 });
 

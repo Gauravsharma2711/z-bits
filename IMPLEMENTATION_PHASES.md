@@ -118,18 +118,24 @@ Every phase follows the mandatory engineering cycle:
 ---
 
 ### Phase 06 — Maya & Bolt Cross-Agent Orchestration
-- **Status:** **READY TO EXECUTE (Awaiting User Authorization)**
+- **Status:** **COMPLETE**
 - **Objective:** Connect Maya (conversational concierge) and Bolt (contributor bounty) as independent request sources to the shared Gate.
-- **Technical Scope:**
-  - Connect Maya chat tool to extract structured `PurchaseIntent` from natural language.
-  - Implement Bolt reward-event trigger (simulated or webhook event) submitting a second intent for the same canonical recipient.
-  - Demonstrate Gate blocking or requiring human approval on Bolt's request after Maya has consumed the recipient budget.
-- **Exit Criteria:** End-to-end proof of USP: Maya purchase succeeds; subsequent Bolt request for the same recipient is blocked by shared ledger.
+- **Technical Scope Accomplished:**
+  - Implemented Maya Concierge Service (`src/server/agents/maya-workflow.ts`) handling natural language extraction, Gate alias resolution, product proposal creation, intent submission, and Runner delivery monitoring.
+  - Implemented Bolt Bounty Service (`src/server/agents/bolt-workflow.ts`) handling contributor intake with unique `idempotency_key` guarantees, milestone validation, Gate shared budget evaluation, and Runner payout execution.
+  - Created SQLite `bounty_events` schema migration and repository methods in `src/server/database.ts`.
+  - Implemented internal agent tools with strict botId permission boundaries (`src/server/agents/agent-tools.ts`).
+  - Exposed agent tools in OpenCode workspace preparation (`src/server/workspace.ts`) and Claude MCP tools (`src/server/claude-mcp.mjs`).
+  - Mounted REST API endpoints in `src/server/index.ts` (`/api/agents/maya/*`, `/api/agents/bolt/*`).
+  - Authored comprehensive test suite `src/server/agents/agents-workflow.test.ts` (18 tests, 100% pass rate).
+  - Proved Core Z-Bits USP: Maya spends $300 on recipient Rahul under a $500 cap; subsequent Bolt request for $250 is deterministically blocked by Gate (`RECIPIENT_LIMIT_EXCEEDED`).
+  - Delivered `MAYA_ARCHITECTURE.md`, `BOLT_ARCHITECTURE.md`, `AGENT_SECURITY.md`, and `AGENT_WORKFLOW_TEST_REPORT.md`.
+- **Exit Criteria:** End-to-end proof of USP: Maya purchase succeeds; subsequent Bolt request for the same recipient is blocked by shared ledger. All 48 project tests passing across Gate, SpendPass, Runner, and Agents.
 
 ---
 
 ### Phase 07 — Zcash NU7 Testnet Integration
-- **Status:** **PENDING (Phase 05 Dependency)**
+- **Status:** **READY TO EXECUTE (Awaiting User Authorization)**
 - **Objective:** Produce a genuine shielded transaction on Zcash NU7 testnet with an encrypted opaque order reference.
 - **Technical Scope:**
   - Integrate verified NU7 testnet tool/SDK using unified addresses (`u1...`).

@@ -40,12 +40,12 @@ function createApprovedIntent(
   };
   const intent: PurchaseIntent = { ...raw, intentDigest: gate.calculateDigest(raw) };
   const evalResult = gate.evaluateIntent(intent);
-  assert.equal(evalResult.allowed, true, `Intent must be allowed: ${evalResult.reasonCodes.join(",")}`);
+  assert.equal(evalResult.allowed, true, `Intent must be allowed: ${evalResult.reasonCodes?.join(",")}`);
   assert.ok(evalResult.spendpass, "SpendPass must be issued on ALLOW");
   return {
     intent,
-    token: evalResult.spendpass.token,
-    spendpassId: evalResult.spendpass.id,
+    token: (evalResult.spendpass?.token || evalResult.spendpassToken)!,
+    spendpassId: evalResult.spendpass!.id,
   };
 }
 

@@ -93,6 +93,9 @@ import type {
   RunnerExecutionStatus,
   MerchantInvoiceRecord,
   MerchantInvoiceStatus,
+  BountyEvent,
+  BountySource,
+  BountyStatus,
 } from "../shared/zbits-types.js";
 
 type Row = Record<string, string | number | null>;
@@ -1413,6 +1416,27 @@ export class OpenBotDatabase {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS idx_runner_invoices_merchant_inv ON runner_invoices(merchant_invoice_id);
+
+      CREATE TABLE IF NOT EXISTS bounty_events (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        contributor_alias TEXT NOT NULL,
+        contributor_id TEXT REFERENCES recipients(id) ON DELETE SET NULL,
+        reward_amount_cents INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        reason TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'manual',
+        source_ref TEXT,
+        idempotency_key TEXT UNIQUE NOT NULL,
+        purchase_intent_id TEXT REFERENCES purchase_intents(id) ON DELETE SET NULL,
+        execution_id TEXT REFERENCES runner_executions(id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_bounty_events_owner ON bounty_events(owner_id);
+      CREATE INDEX IF NOT EXISTS idx_bounty_events_idempotency ON bounty_events(idempotency_key);
     `);
     this.db.exec(`UPDATE bots SET mac_access_enabled=CAST((SELECT setting_value FROM app_settings WHERE setting_key='mac_access_enabled') AS INTEGER)`);
   }
@@ -6215,6 +6239,98 @@ export class OpenBotDatabase {
       deliveryRef: row.delivery_ref ? String(row.delivery_ref) : null,
       deliveredAt: row.delivered_at ? String(row.delivered_at) : null,
       errorMessage: row.error_message ? String(row.error_message) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  createBountyEvent(event: Omit<BountyEvent, "createdAt" | "updatedAt">): BountyEvent {
+    const at = now();
+    const created: BountyEvent = {
+      ...event,
+      createdAt: at,
+      updatedAt: at,
+    };
+    this.db.prepare(`
+      INSERT INTO bounty_events
+      (id, owner_id, contributor_alias, contributor_id, reward_amount_cents, currency, reason, source, source_ref, idempotency_key, purchase_intent_id, execution_id, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      created.id,
+      created.ownerId,
+      created.contributorAlias,
+      created.contributorId || null,
+      created.rewardAmountCents,
+      created.currency,
+      created.reason,
+      created.source,
+      created.sourceRef || null,
+      created.idempotencyKey,
+      created.purchaseIntentId || null,
+      created.executionId || null,
+      created.status,
+      at,
+      at
+    );
+    return created;
+  }
+
+  getBountyEvent(id: string): BountyEvent | null {
+    const row = this.db.prepare("SELECT * FROM bounty_events WHERE id=?").get(id) as Row;
+    if (!row) return null;
+    return this.mapBountyEventRow(row);
+  }
+
+  getBountyEventByIdempotencyKey(idempotencyKey: string): BountyEvent | null {
+    const row = this.db.prepare("SELECT * FROM bounty_events WHERE idempotency_key=?").get(idempotencyKey) as Row;
+    if (!row) return null;
+    return this.mapBountyEventRow(row);
+  }
+
+  updateBountyEvent(id: string, patch: Partial<BountyEvent>): BountyEvent | null {
+    const existing = this.getBountyEvent(id);
+    if (!existing) return null;
+    const at = now();
+    const updated: BountyEvent = {
+      ...existing,
+      ...patch,
+      updatedAt: at,
+    };
+    this.db.prepare(`
+      UPDATE bounty_events
+      SET contributor_id=?, purchase_intent_id=?, execution_id=?, status=?, updated_at=?
+      WHERE id=?
+    `).run(
+      updated.contributorId || null,
+      updated.purchaseIntentId || null,
+      updated.executionId || null,
+      updated.status,
+      at,
+      id
+    );
+    return updated;
+  }
+
+  listBountyEvents(ownerId = DEFAULT_OWNER, limit = 50): BountyEvent[] {
+    const rows = this.db.prepare("SELECT * FROM bounty_events WHERE owner_id=? ORDER BY created_at DESC LIMIT ?").all(ownerId, limit) as Row[];
+    return rows.map((r) => this.mapBountyEventRow(r));
+  }
+
+  private mapBountyEventRow(row: Row): BountyEvent {
+    return {
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      contributorAlias: String(row.contributor_alias),
+      contributorId: row.contributor_id ? String(row.contributor_id) : null,
+      rewardAmountCents: Number(row.reward_amount_cents),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      reason: String(row.reason),
+      source: String(row.source) as BountySource,
+      sourceRef: row.source_ref ? String(row.source_ref) : null,
+      idempotencyKey: String(row.idempotency_key),
+      purchaseIntentId: row.purchase_intent_id ? String(row.purchase_intent_id) : null,
+      executionId: row.execution_id ? String(row.execution_id) : null,
+      status: String(row.status) as BountyStatus,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
