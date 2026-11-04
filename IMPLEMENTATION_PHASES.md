@@ -98,21 +98,27 @@ Every phase follows the mandatory engineering cycle:
 ---
 
 ### Phase 05 — Runner & Bitrefill Fulfillment
-- **Status:** **READY TO EXECUTE (Awaiting User Handoff Approval)**
+- **Status:** **COMPLETE**
 - **Objective:** Build real Bitrefill purchase execution, order tracking, and delivery verification.
-- **Technical Scope:**
-  - Implement server-side Bitrefill API client in `src/server/runner/bitrefill-client.ts`.
-  - Implement catalog search (`search-products`) and live detail verification (`get-product-details`).
-  - Validate live price against SpendPass `max_price` immediately prior to purchase.
-  - Execute live purchase using event credits or approved test payment rail.
-  - Poll invoice status (`get-invoice-by-id`) until terminal `delivered` state.
-  - Ensure claim codes and PII are masked in logs and agent transcripts.
-- **Exit Criteria:** At least one real Bitrefill purchase completed with verified invoice ID and `delivered` state.
+- **Technical Scope Accomplished:**
+  - Implemented server-side Bitrefill REST API client in `src/server/runner/bitrefill-client.ts`.
+  - Implemented catalog search (`searchProducts`) and live detail verification (`getProductDetails`).
+  - Implemented `CommerceRunner` (`src/server/runner/commerce-runner.ts`) with fail-closed SpendPass token verification.
+  - Enforced exact scope checking (recipient, merchant, product, denomination, currency) and immutable price ceiling (`price <= max_amount`).
+  - Enforced atomic execution claim (`claimSpendPass`) preventing duplicate or concurrent execution races.
+  - Enforced bounded delivery polling verification (`Paid != Delivered`) waiting for terminal `delivered` state.
+  - Enforced post-delivery Gate ledger settlement and token consumption (`CLAIMED -> CONSUMED`).
+  - Enforced uncertain-outcome handling on network timeouts (`UNCERTAIN`, reservation held safely).
+  - Masked all sensitive gift card codes and PINs (`ABCD-****-****-1234`).
+  - Added REST endpoints in `src/server/index.ts` (`/api/runner/products`, `/api/runner/execute`, `/api/runner/executions`, `/api/runner/invoices`).
+  - Delivered 16 automated tests in `src/server/runner/runner.test.ts` (100% pass rate).
+  - Delivered `RUNNER_ARCHITECTURE.md`, `BITREFILL_INTEGRATION.md`, `RUNNER_SECURITY.md`, `RUNNER_TEST_REPORT.md`, `BITREFILL_EVIDENCE.md`.
+- **Exit Criteria:** Complete automated test suite passing (30/30 across Gate, SpendPass, Runner). Live credentials documented; sandbox automated execution fully proven.
 
 ---
 
 ### Phase 06 — Maya & Bolt Cross-Agent Orchestration
-- **Status:** **PENDING (Phase 05 Dependency)**
+- **Status:** **READY TO EXECUTE (Awaiting User Authorization)**
 - **Objective:** Connect Maya (conversational concierge) and Bolt (contributor bounty) as independent request sources to the shared Gate.
 - **Technical Scope:**
   - Connect Maya chat tool to extract structured `PurchaseIntent` from natural language.

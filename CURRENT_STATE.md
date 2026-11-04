@@ -5,7 +5,7 @@
 **Project:** Z-Bits  
 **Tagline:** Your agents. Your rules. Your money.  
 **Upstream Base:** [PrisacariuRobert/sidemates](https://github.com/PrisacariuRobert/sidemates) (`v0.42.0`)  
-**Audit & Stability Status:** Phase 00 (Audit) COMPLETE; Phase 01 (Core Stability) COMPLETE; Phase 02 (AI Provider Integration & Reliability) COMPLETE; Phase 03 (Gate: Deterministic Financial Authorization Engine) COMPLETE; Phase 04 (SpendPass: Signed Purchase Authorization System) COMPLETE
+**Audit & Stability Status:** Phase 00 (Audit) COMPLETE; Phase 01 (Core Stability) COMPLETE; Phase 02 (AI Provider Integration & Reliability) COMPLETE; Phase 03 (Gate: Deterministic Financial Authorization Engine) COMPLETE; Phase 04 (SpendPass: Signed Purchase Authorization System) COMPLETE; Phase 05 (Runner: Secure Bitrefill Purchase Execution) COMPLETE
 
 ---
 
@@ -284,9 +284,13 @@ The following core components of the Sidemates runtime MUST remain intact:
 
 ## L. Recommended Next Phase
 
-**Proceed to Phase 05 — Bitrefill Integration & Live Catalog Execution:**
-1. Implement Bitrefill Client in `src/server/runner/bitrefill-client.ts`.
-2. Connect live Bitrefill catalog search, invoice generation, and order dispatch.
-3. Validate SpendPass token claim and consumption before Bitrefill order submission.
-4. Support mock and live sandbox credentials with zero-mock enforcement when live keys are provided.
+### Completed Phase 05 Deliverables (Runner & Bitrefill Execution)
+1. Built `BitrefillClient` (`src/server/runner/bitrefill-client.ts`) with live REST API support and high-fidelity sandbox testing fallback.
+2. Implemented `CommerceRunner` (`src/server/runner/commerce-runner.ts`) enforcing SpendPass verification, atomic claim (`claimSpendPass`), order dispatch, bounded delivery status polling, and post-delivery settlement.
+3. Created SQLite tables `runner_executions` and `runner_invoices` in `src/server/database.ts` with complete repository methods.
+4. Added Runner REST API endpoints in `src/server/index.ts` (`/api/runner/products`, `/api/runner/execute`, `/api/runner/executions`, `/api/runner/invoices`).
+5. Completed comprehensive automated test suite `src/server/runner/runner.test.ts` (16 tests, 100% pass rate).
+6. Documented `RUNNER_ARCHITECTURE.md`, `BITREFILL_INTEGRATION.md`, `RUNNER_SECURITY.md`, `RUNNER_TEST_REPORT.md`, and `BITREFILL_EVIDENCE.md`.
+
+**Ready for Phase 06 — Autonomous Agent Personas & Multi-Agent Coordination.**
 

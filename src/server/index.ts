@@ -5545,12 +5545,123 @@ app.post("/api/gate/spendpass/:id/revoke", (request, response) => {
 });
 
 app.get("/api/runner/integrations", (_request, response) => {
-  response.json(getCommerceRunner().getIntegrations());
+  response.json(getCommerceRunner(db).getIntegrations());
+});
+
+app.get("/api/runner/products", async (request, response) => {
+  try {
+    const q = typeof request.query.q === "string" ? request.query.q : undefined;
+    const country = typeof request.query.country === "string" ? request.query.country : undefined;
+    const runner = getCommerceRunner(db);
+    const products = await runner.searchProducts(q, country);
+    response.json({ products });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to search products" });
+  }
+});
+
+app.get("/api/runner/products/:id", async (request, response) => {
+  try {
+    const runner = getCommerceRunner(db);
+    const product = await runner.getProduct(request.params.id);
+    if (!product) {
+      return response.status(404).json({ error: `Product "${request.params.id}" not found.` });
+    }
+    response.json(product);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get product" });
+  }
+});
+
+app.post("/api/runner/execute", async (request, response) => {
+  try {
+    const { spendpassToken, productId, denominationCents, currency, recipientId, actor } = request.body || {};
+    if (!spendpassToken || typeof spendpassToken !== "string") {
+      return response.status(400).json({ error: "spendpassToken string is required." });
+    }
+    if (!productId || typeof productId !== "string") {
+      return response.status(400).json({ error: "productId string is required." });
+    }
+    if (typeof denominationCents !== "number" || denominationCents <= 0) {
+      return response.status(400).json({ error: "denominationCents must be a positive integer." });
+    }
+
+    const runner = getCommerceRunner(db);
+    const result = await runner.executeSpendPass({
+      spendpassToken,
+      productId,
+      denominationCents,
+      currency,
+      recipientId,
+      actor,
+    });
+
+    const statusMap: Record<string, number> = {
+      SUCCESS: 200,
+      FAILED: 400,
+      UNCERTAIN: 202,
+    };
+    const statusCode = statusMap[result.status] || (result.success ? 200 : 400);
+    response.status(statusCode).json(result);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Execution failed" });
+  }
+});
+
+app.get("/api/runner/executions", (request, response) => {
+  try {
+    const ownerId = typeof request.query.ownerId === "string" ? request.query.ownerId : "local-owner";
+    const limit = Math.min(200, Math.max(1, parseInt(String(request.query.limit || "50"), 10) || 50));
+    const runner = getCommerceRunner(db);
+    const executions = runner.listExecutions(ownerId, limit);
+    response.json({ executions });
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to list executions" });
+  }
+});
+
+app.get("/api/runner/executions/:id", (request, response) => {
+  try {
+    const runner = getCommerceRunner(db);
+    const execution = runner.getExecution(request.params.id);
+    if (!execution) {
+      return response.status(404).json({ error: `Execution "${request.params.id}" not found.` });
+    }
+    response.json(execution);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get execution" });
+  }
+});
+
+app.get("/api/runner/invoices/:id", (request, response) => {
+  try {
+    const runner = getCommerceRunner(db);
+    const invoice = runner.getInvoice(request.params.id);
+    if (!invoice) {
+      return response.status(404).json({ error: `Invoice "${request.params.id}" not found.` });
+    }
+    response.json(invoice);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get invoice" });
+  }
+});
+
+app.post("/api/runner/invoices/:id/poll", async (request, response) => {
+  try {
+    const runner = getCommerceRunner(db);
+    const invoice = await runner.pollInvoice(request.params.id);
+    if (!invoice) {
+      return response.status(404).json({ error: `Invoice "${request.params.id}" not found or failed to poll.` });
+    }
+    response.json(invoice);
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to poll invoice" });
+  }
 });
 
 app.get("/api/zbits/overview", async (_request, response) => {
   const gate = getGateEngine(db);
-  const runner = getCommerceRunner();
+  const runner = getCommerceRunner(db);
   const bots = db.listBots();
   const providerStatus = await readProviderStatus(db);
   const pendingApprovals = db.listApprovals().filter((a: any) => a.status === "pending");

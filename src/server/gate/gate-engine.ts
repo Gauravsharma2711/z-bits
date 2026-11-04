@@ -934,7 +934,7 @@ export class GateEngine {
     this.recipientSpendCents.set(recipientId, currentRec + intent.amountCents);
   }
 
-  private recordAudit(kind: AuditEvent["kind"], severity: AuditEvent["severity"], actor: string, details: Record<string, unknown>): void {
+  public recordAudit(kind: AuditEvent["kind"], severity: AuditEvent["severity"], actor: string, details: Record<string, unknown>): void {
     this.auditLog.unshift({
       id: `audit_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       timestamp: new Date().toISOString(),

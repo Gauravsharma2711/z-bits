@@ -325,6 +325,12 @@ export type AuditEventKind =
   | "spendpass_rejected"
   | "runner_dispatched"
   | "runner_execution_blocked"
+  | "runner_purchase_initiated"
+  | "runner_purchase_completed"
+  | "runner_purchase_failed"
+  | "runner_purchase_uncertain"
+  | "runner_delivery_confirmed"
+  | "runner_settlement_completed"
   | "policy_updated"
   | "credential_accessed";
 
@@ -347,4 +353,121 @@ export interface CommerceIntegrationStatus {
   status: "active" | "disabled" | "coming_soon" | "not_configured";
   description: string;
   notice: string;
+}
+
+// ==========================================
+// RUNNER: EXECUTION, INVOICES & BITREFILL
+// ==========================================
+
+export type RunnerReasonCode =
+  | "BITREFILL_CONFIGURATION_MISSING"
+  | "BITREFILL_AUTH_FAILED"
+  | "BITREFILL_UNAVAILABLE"
+  | "PRODUCT_NOT_FOUND"
+  | "PRODUCT_UNAVAILABLE"
+  | "DENOMINATION_INVALID"
+  | "PRICE_MISMATCH"
+  | "PRICE_EXCEEDS_AUTHORIZATION"
+  | "SPENDPASS_INVALID"
+  | "SPENDPASS_EXPIRED"
+  | "SPENDPASS_REVOKED"
+  | "SPENDPASS_ALREADY_CLAIMED"
+  | "RESERVATION_INVALID"
+  | "EMERGENCY_PAUSE_ACTIVE"
+  | "DUPLICATE_EXECUTION"
+  | "MERCHANT_OUTCOME_UNCERTAIN"
+  | "INVOICE_NOT_FOUND"
+  | "DELIVERY_PENDING"
+  | "DELIVERY_FAILED"
+  | "SETTLEMENT_FAILED"
+  | "RECONCILIATION_REQUIRED";
+
+export interface BitrefillPackage {
+  value: number; // minor units (cents)
+  price: number; // minor units (cents)
+  currency: CurrencyCode;
+}
+
+export interface BitrefillProduct {
+  id: string;
+  name: string;
+  description?: string;
+  country: string;
+  currency: CurrencyCode;
+  categories: string[];
+  packages: BitrefillPackage[];
+  range?: { min: number; max: number; step?: number };
+  isAvailable: boolean;
+  logoUrl?: string;
+}
+
+export type MerchantInvoiceStatus =
+  | "CREATED"
+  | "PENDING"
+  | "PAID"
+  | "DELIVERED"
+  | "FAILED"
+  | "CANCELLED"
+  | "UNCERTAIN";
+
+export interface MerchantInvoiceRecord {
+  id: string;
+  executionId: string;
+  purchaseIntentId: string;
+  spendpassId: string;
+  ownerId: string;
+  merchant: string;
+  merchantInvoiceId: string;
+  merchantOrderId?: string | null;
+  productId: string;
+  denomination: number;
+  currency: CurrencyCode;
+  actualAmountCents: number;
+  status: MerchantInvoiceStatus;
+  merchantStatus: string;
+  deliveryRef?: string | null;
+  deliveredAt?: string | null;
+  errorMessage?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type RunnerExecutionStatus =
+  | "PENDING"
+  | "IN_FLIGHT"
+  | "COMPLETED"
+  | "FAILED"
+  | "UNCERTAIN";
+
+export interface RunnerExecutionRecord {
+  id: string;
+  spendpassId: string;
+  purchaseIntentId: string;
+  ownerId: string;
+  merchant: string;
+  status: RunnerExecutionStatus;
+  actualAmountCents: number;
+  currency: CurrencyCode;
+  invoiceId?: string | null;
+  merchantInvoiceId?: string | null;
+  error?: string | null;
+  reasonCodes: (RunnerReasonCode | SpendPassReasonCode | string)[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RunnerExecutionResult {
+  success: boolean;
+  executionId: string;
+  status: RunnerExecutionStatus;
+  merchantInvoiceId?: string;
+  deliveryStatus?: string;
+  deliveredAt?: string;
+  deliveryRef?: string;
+  actualAmountCents: number;
+  currency: CurrencyCode;
+  reasonCodes: (RunnerReasonCode | SpendPassReasonCode | string)[];
+  errorMessage?: string;
+  invoice?: MerchantInvoiceRecord;
+  execution?: RunnerExecutionRecord;
 }

@@ -89,6 +89,10 @@ import type {
   CurrencyCode,
   SpendPassRecord,
   SpendPassStatus,
+  RunnerExecutionRecord,
+  RunnerExecutionStatus,
+  MerchantInvoiceRecord,
+  MerchantInvoiceStatus,
 } from "../shared/zbits-types.js";
 
 type Row = Record<string, string | number | null>;
@@ -1369,6 +1373,45 @@ export class OpenBotDatabase {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(owner_id, authorization_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS runner_executions (
+        id TEXT PRIMARY KEY,
+        spendpass_id TEXT NOT NULL REFERENCES spendpass_tokens(id) ON DELETE CASCADE,
+        purchase_intent_id TEXT NOT NULL REFERENCES purchase_intents(id) ON DELETE CASCADE,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        merchant TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        actual_amount_cents INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        invoice_id TEXT,
+        merchant_invoice_id TEXT,
+        error TEXT,
+        reason_codes_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS runner_invoices (
+        id TEXT PRIMARY KEY,
+        execution_id TEXT NOT NULL REFERENCES runner_executions(id) ON DELETE CASCADE,
+        purchase_intent_id TEXT NOT NULL REFERENCES purchase_intents(id) ON DELETE CASCADE,
+        spendpass_id TEXT NOT NULL REFERENCES spendpass_tokens(id) ON DELETE CASCADE,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        merchant TEXT NOT NULL,
+        merchant_invoice_id TEXT UNIQUE NOT NULL,
+        merchant_order_id TEXT,
+        product_id TEXT NOT NULL,
+        denomination INTEGER NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        actual_amount_cents INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'CREATED',
+        merchant_status TEXT NOT NULL,
+        delivery_ref TEXT,
+        delivered_at TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
     `);
     this.db.exec(`UPDATE bots SET mac_access_enabled=CAST((SELECT setting_value FROM app_settings WHERE setting_key='mac_access_enabled') AS INTEGER)`);
@@ -5958,6 +6001,220 @@ export class OpenBotDatabase {
       expiresAt: String(row.expires_at),
       consumedAt: row.consumed_at ? String(row.consumed_at) : null,
       revokedAt: row.revoked_at ? String(row.revoked_at) : null,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  // ==========================================
+  // Z-BITS RUNNER: EXECUTIONS & INVOICES
+  // ==========================================
+
+  createRunnerExecution(record: Omit<RunnerExecutionRecord, "createdAt" | "updatedAt">): RunnerExecutionRecord {
+    const at = now();
+    this.db.prepare(`
+      INSERT INTO runner_executions
+      (id, spendpass_id, purchase_intent_id, owner_id, merchant, status, actual_amount_cents, currency, invoice_id, merchant_invoice_id, error, reason_codes_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.spendpassId,
+      record.purchaseIntentId,
+      record.ownerId,
+      record.merchant,
+      record.status,
+      record.actualAmountCents,
+      record.currency,
+      record.invoiceId || null,
+      record.merchantInvoiceId || null,
+      record.error || null,
+      JSON.stringify(record.reasonCodes || []),
+      at,
+      at
+    );
+
+    return {
+      ...record,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  getRunnerExecution(id: string): RunnerExecutionRecord | null {
+    const row = this.db.prepare("SELECT * FROM runner_executions WHERE id=?").get(id) as Row;
+    if (!row) return null;
+    return this.mapRunnerExecutionRow(row);
+  }
+
+  getRunnerExecutionBySpendPassId(spendpassId: string): RunnerExecutionRecord | null {
+    const row = this.db.prepare("SELECT * FROM runner_executions WHERE spendpass_id=? ORDER BY created_at DESC LIMIT 1").get(spendpassId) as Row;
+    if (!row) return null;
+    return this.mapRunnerExecutionRow(row);
+  }
+
+  updateRunnerExecution(id: string, patch: Partial<RunnerExecutionRecord>): RunnerExecutionRecord | null {
+    const existing = this.getRunnerExecution(id);
+    if (!existing) return null;
+
+    const at = now();
+    const updated: RunnerExecutionRecord = {
+      ...existing,
+      ...patch,
+      updatedAt: at,
+    };
+
+    this.db.prepare(`
+      UPDATE runner_executions
+      SET status=?, actual_amount_cents=?, invoice_id=?, merchant_invoice_id=?, error=?, reason_codes_json=?, updated_at=?
+      WHERE id=?
+    `).run(
+      updated.status,
+      updated.actualAmountCents,
+      updated.invoiceId || null,
+      updated.merchantInvoiceId || null,
+      updated.error || null,
+      JSON.stringify(updated.reasonCodes || []),
+      at,
+      id
+    );
+
+    return updated;
+  }
+
+  listRunnerExecutions(ownerId = DEFAULT_OWNER, limit = 50): RunnerExecutionRecord[] {
+    const rows = this.db.prepare("SELECT * FROM runner_executions WHERE owner_id=? ORDER BY created_at DESC LIMIT ?").all(ownerId, limit) as Row[];
+    return rows.map((r) => this.mapRunnerExecutionRow(r));
+  }
+
+  createMerchantInvoice(record: Omit<MerchantInvoiceRecord, "createdAt" | "updatedAt">): MerchantInvoiceRecord {
+    const at = now();
+    this.db.prepare(`
+      INSERT INTO runner_invoices
+      (id, execution_id, purchase_intent_id, spendpass_id, owner_id, merchant, merchant_invoice_id, merchant_order_id, product_id, denomination, currency, actual_amount_cents, status, merchant_status, delivery_ref, delivered_at, error_message, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.executionId,
+      record.purchaseIntentId,
+      record.spendpassId,
+      record.ownerId,
+      record.merchant,
+      record.merchantInvoiceId,
+      record.merchantOrderId || null,
+      record.productId,
+      record.denomination,
+      record.currency,
+      record.actualAmountCents,
+      record.status,
+      record.merchantStatus,
+      record.deliveryRef || null,
+      record.deliveredAt || null,
+      record.errorMessage || null,
+      at,
+      at
+    );
+
+    return {
+      ...record,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  getMerchantInvoice(id: string): MerchantInvoiceRecord | null {
+    const row = this.db.prepare("SELECT * FROM runner_invoices WHERE id=?").get(id) as Row;
+    if (!row) return null;
+    return this.mapMerchantInvoiceRow(row);
+  }
+
+  getMerchantInvoiceByMerchantInvoiceId(merchantInvoiceId: string): MerchantInvoiceRecord | null {
+    const row = this.db.prepare("SELECT * FROM runner_invoices WHERE merchant_invoice_id=?").get(merchantInvoiceId) as Row;
+    if (!row) return null;
+    return this.mapMerchantInvoiceRow(row);
+  }
+
+  getMerchantInvoiceByExecutionId(executionId: string): MerchantInvoiceRecord | null {
+    const row = this.db.prepare("SELECT * FROM runner_invoices WHERE execution_id=? ORDER BY created_at DESC LIMIT 1").get(executionId) as Row;
+    if (!row) return null;
+    return this.mapMerchantInvoiceRow(row);
+  }
+
+  updateMerchantInvoice(id: string, patch: Partial<MerchantInvoiceRecord>): MerchantInvoiceRecord | null {
+    const existing = this.getMerchantInvoice(id);
+    if (!existing) return null;
+
+    const at = now();
+    const updated: MerchantInvoiceRecord = {
+      ...existing,
+      ...patch,
+      updatedAt: at,
+    };
+
+    this.db.prepare(`
+      UPDATE runner_invoices
+      SET status=?, merchant_status=?, delivery_ref=?, delivered_at=?, error_message=?, updated_at=?
+      WHERE id=?
+    `).run(
+      updated.status,
+      updated.merchantStatus,
+      updated.deliveryRef || null,
+      updated.deliveredAt || null,
+      updated.errorMessage || null,
+      at,
+      id
+    );
+
+    return updated;
+  }
+
+  listMerchantInvoices(ownerId = DEFAULT_OWNER, limit = 50): MerchantInvoiceRecord[] {
+    const rows = this.db.prepare("SELECT * FROM runner_invoices WHERE owner_id=? ORDER BY created_at DESC LIMIT ?").all(ownerId, limit) as Row[];
+    return rows.map((r) => this.mapMerchantInvoiceRow(r));
+  }
+
+  private mapRunnerExecutionRow(row: Row): RunnerExecutionRecord {
+    let reasonCodes: string[] = [];
+    try {
+      if (row.reason_codes_json) reasonCodes = JSON.parse(String(row.reason_codes_json));
+    } catch {}
+
+    return {
+      id: String(row.id),
+      spendpassId: String(row.spendpass_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      ownerId: String(row.owner_id),
+      merchant: String(row.merchant),
+      status: String(row.status) as RunnerExecutionStatus,
+      actualAmountCents: Number(row.actual_amount_cents),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      invoiceId: row.invoice_id ? String(row.invoice_id) : null,
+      merchantInvoiceId: row.merchant_invoice_id ? String(row.merchant_invoice_id) : null,
+      error: row.error ? String(row.error) : null,
+      reasonCodes,
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+    };
+  }
+
+  private mapMerchantInvoiceRow(row: Row): MerchantInvoiceRecord {
+    return {
+      id: String(row.id),
+      executionId: String(row.execution_id),
+      purchaseIntentId: String(row.purchase_intent_id),
+      spendpassId: String(row.spendpass_id),
+      ownerId: String(row.owner_id),
+      merchant: String(row.merchant),
+      merchantInvoiceId: String(row.merchant_invoice_id),
+      merchantOrderId: row.merchant_order_id ? String(row.merchant_order_id) : null,
+      productId: String(row.product_id),
+      denomination: Number(row.denomination),
+      currency: String(row.currency || "USD") as CurrencyCode,
+      actualAmountCents: Number(row.actual_amount_cents),
+      status: String(row.status) as MerchantInvoiceStatus,
+      merchantStatus: String(row.merchant_status),
+      deliveryRef: row.delivery_ref ? String(row.delivery_ref) : null,
+      deliveredAt: row.delivered_at ? String(row.delivered_at) : null,
+      errorMessage: row.error_message ? String(row.error_message) : null,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
