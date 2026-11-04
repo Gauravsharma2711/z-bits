@@ -1,0 +1,48 @@
+name: Desktop installers
+on:
+  workflow_dispatch:
+    inputs:
+      upload_artifacts:
+        description: Upload installers after a manual validation run
+        type: boolean
+        default: false
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: macos-15, platform: darwin-arm64}
+          - {os: macos-15-intel, platform: darwin-x64}
+          - {os: ubuntu-latest, platform: linux-x64}
+          - {os: windows-latest, platform: win-x64}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:desktop
+      - name: Build shared UI, stage runtime, package Electron
+        run: npm run package:desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ github.event_name == 'workflow_call' || inputs.upload_artifacts }}
+        with:
+          name: sidemates-desktop-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.exe
+            desktop/release/*.AppImage
+            desktop/release/*.deb

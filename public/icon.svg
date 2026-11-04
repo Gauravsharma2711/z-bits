@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#080d1a"/>
+      <stop offset="50%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#070a14"/>
+    </linearGradient>
+    <linearGradient id="primary" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="45%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#a855f7"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  <!-- Background with subtle border -->
+  <rect width="512" height="512" rx="128" fill="url(#bg)"/>
+  <rect x="2" y="2" width="508" height="508" rx="126" fill="none" stroke="url(#primary)" stroke-opacity="0.25" stroke-width="4"/>
+
+  <!-- Orbital Agent Ring -->
+  <circle cx="256" cy="256" r="180" fill="none" stroke="#38bdf8" stroke-opacity="0.12" stroke-width="3" stroke-dasharray="8 12"/>
+  <circle cx="256" cy="256" r="130" fill="none" stroke="#8b5cf6" stroke-opacity="0.15" stroke-width="2"/>
+
+  <!-- Z-Bits Core Glyph -->
+  <path d="M 160 170 L 352 170 L 195 330 L 352 330" fill="none" stroke="url(#primary)" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  <path d="M 160 170 L 352 170 L 195 330 L 352 330" fill="none" stroke="#ffffff" stroke-opacity="0.9" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Satellite Bits (Agent nodes) -->
+  <circle cx="160" cy="170" r="14" fill="#38bdf8"/>
+  <circle cx="352" cy="170" r="14" fill="#60a5fa"/>
+  <circle cx="195" cy="330" r="14" fill="#8b5cf6"/>
+  <circle cx="352" cy="330" r="14" fill="#a855f7"/>
+</svg>

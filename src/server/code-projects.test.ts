@@ -1,0 +1,311 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { OpenBotDatabase } from "./testing/database.js";
+import { CodeProjectManager, parseGitHubRepository } from "./code-projects.js";
+
+test("grants bounded per-teammate coding access and records focused edits", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "openbot-code-project-test-"));
+  try {
+    const projectRoot = path.join(root, "sample-app");
+    mkdirSync(path.join(projectRoot, "src"), { recursive: true });
+    writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({ name: "sample-app" }), "utf8");
+    writeFileSync(path.join(projectRoot, "src", "main.ts"), "export const greeting = 'hello';\n", "utf8");
+    writeFileSync(path.join(projectRoot, ".env"), "SECRET=hidden\n", "utf8");
+    const db = new OpenBotDatabase(root), manager = new CodeProjectManager(db, root);
+    const inspected = manager.inspectRoot(projectRoot);
+    assert.equal(inspected.projectKind, "JavaScript / TypeScript");
+    const project = db.createCodeProject({
+      name: "Sample app", ...inspected,
+      access: [
+        { botId: "nova", canRead: true, canWrite: true, canRun: true },
+        { botId: "pixel", canRead: true, canWrite: false, canRun: false },
+      ],
+    });
+    assert.equal(db.listCodeProjects("scout").length, 0);
+    assert.equal(manager.list("nova", project.id).entries.some((entry) => entry.path === "src/main.ts"), true);
+    assert.match(manager.read("pixel", project.id, "src/main.ts").content, /hello/);
+    assert.equal(manager.search("nova", project.id, "greeting").matches.length, 1);
+    assert.throws(() => manager.read("nova", project.id, ".env"), /Hidden project files/);
+    assert.throws(() => manager.read("nova", project.id, "../outside.txt"), /leaves the allowed code project/);
+    assert.throws(() => manager.write("pixel", project.id, "src/main.ts", "no"), /does not have write access/);
+    manager.replace("nova", project.id, "src/main.ts", "'hello'", "'hello from Sidemates'");
+    assert.match(readFileSync(path.join(projectRoot, "src", "main.ts"), "utf8"), /hello from Sidemates/);
+    assert.equal(db.listCodeProjectEdits(project.id).length, 1);
+    const unsafe = manager.write("nova", project.id, "src/advisory.ts", "eval(userInput);\n");
+    assert.equal(unsafe.securityGuidance.warnings[0]?.rule, "dynamic-code");
+    const repaired = manager.replace("nova", project.id, "src/advisory.ts", "eval(userInput)", "JSON.parse(userInput)");
+    assert.deepEqual(repaired.securityGuidance.warnings, []);
+    assert.equal(db.deleteCodeProject(project.id), true);
+    assert.equal(db.listCodeProjects().length, 0);
+    assert.equal(db.listCodeProjectEdits(project.id).length, 3);
+    assert.equal(readFileSync(path.join(projectRoot, "src", "main.ts"), "utf8").includes("Sidemates"), true);
+    const reconnected = db.createCodeProject({ name: "Sample app again", ...inspected, access: [{ botId: "pixel", canRead: true, canWrite: false, canRun: false }] });
+    assert.equal(reconnected.id, project.id);
+    assert.equal(db.listCodeProjectEdits(project.id).length, 3);
+    db.close();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("blocks project-root aliases and aliases that escape a shared project", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "openbot-code-alias-test-"));
+  const outside = mkdtempSync(path.join(tmpdir(), "openbot-code-outside-"));
+  try {
+    const realProject = path.join(root, "real-project"), aliasProject = path.join(root, "project-alias");
+    mkdirSync(realProject); writeFileSync(path.join(outside, "private.ts"), "private", "utf8");
+    symlinkSync(realProject, aliasProject); symlinkSync(path.join(outside, "private.ts"), path.join(realProject, "shortcut.ts"));
+    const db = new OpenBotDatabase(root), manager = new CodeProjectManager(db, root);
+    assert.throws(() => manager.inspectRoot(aliasProject), /real project folder/);
+    const project = db.createCodeProject({ name: "Real", ...manager.inspectRoot(realProject), access: [{ botId: "nova", canRead: true, canWrite: true, canRun: false }] });
+    assert.throws(() => manager.read("nova", project.id, "shortcut.ts"), /symbolic links/);
+    db.close();
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
+});
+
+test("validates GitHub clone links without accepting credentials or extra paths", () => {
+  assert.deepEqual(parseGitHubRepository("openai/codex"), { owner: "openai", name: "codex", url: "https://github.com/openai/codex.git" });
+  assert.deepEqual(parseGitHubRepository("https://github.com/openai/codex.git"), { owner: "openai", name: "codex", url: "https://github.com/openai/codex.git" });
+  assert.throws(() => parseGitHubRepository("https://token@github.com/openai/codex"), /standard public or private/);
+  assert.throws(() => parseGitHubRepository("https://github.com/openai/codex/issues"), /standard public or private/);
+  assert.throws(() => parseGitHubRepository("https://example.com/openai/codex"), /standard public or private/);
+});
+
+function publicationProjectFixture() {
+  const root = mkdtempSync(path.join(tmpdir(), "openbot-publication-review-")), projectRoot = path.join(root, "app");
+  mkdirSync(projectRoot);
+  const git = (cwd: string, ...args: string[]) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return String(result.stdout || "").trim();
+  };
+  git(projectRoot, "init", "-b", "main");
+  git(projectRoot, "remote", "add", "origin", "https://github.com/fixture/orders.git");
+  writeFileSync(path.join(projectRoot, "total.js"), "export const total = (price, quantity) => price;\n");
+  git(projectRoot, "add", "total.js");
+  git(projectRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "Baseline");
+  const db = new OpenBotDatabase(root), manager = new CodeProjectManager(db, root);
+  const project = db.createCodeProject({ name: "Orders", ...manager.inspectRoot(projectRoot), access: [{ botId: "nova", canRead: true, canWrite: true, canRun: true }, { botId: "pixel", canRead: true, canWrite: false, canRun: false }] });
+  const run = db.createRun({ botId: "nova", threadId: "team-room", prompt: "Fix order totals", status: "queued" });
+  manager.branch("nova", project.id, "openbot/fix-total", run.id);
+  const taskRoot = db.getCodeTaskWorkspace(run.id)!.rootPath;
+  manager.write("nova", project.id, "total.js", "export const total = (price, quantity) => price * quantity;\n", run.id);
+  manager.commit("nova", project.id, "Fix order quantities", ["total.js"], run.id);
+  const evidence = () => {
+    const head = manager.currentCommit("nova", project.id, run.id);
+    db.saveCodeCheck({ id: `check-${head}`, runId: run.id, projectId: project.id, command: "node --test", headCommit: head, status: "passed", exitCode: 0, startedAt: "2026-09-06T00:00:00Z", finishedAt: "2026-09-06T00:00:01Z", detail: "Storage fixture; real checks covered by code-delivery.test.ts." });
+    const reviewer = db.createRun({ botId: "pixel", threadId: "team-room", prompt: "Review this change", status: "queued", parentRunId: run.id });
+    db.recordCodeTaskReview({ sourceRunId: run.id, reviewerRunId: reviewer.id, projectId: project.id, reviewerBotId: "pixel", verdict: "approved", summary: "Quantity calculation is correct.", findings: [], headCommit: head });
+  };
+  evidence();
+  const input = { title: "Fix order totals", body: "Multiply by quantity and verify the focused fix.", draft: true };
+  return { root, projectRoot, taskRoot, db, manager, project, run, input, evidence, git, close: () => { db.close(); rmSync(root, { recursive: true, force: true }); } };
+}
+
+test("publication review freezes exact local changes, destination, checks, reviewer and grants", () => {
+  const fixture = publicationProjectFixture();
+  const { manager, project, run, input, git, taskRoot, db } = fixture;
+  try {
+    const review = manager.preparePublishReview("nova", project.id, input, run.id);
+    assert.equal(review.repository, "fixture/orders");
+    assert.equal(review.remoteUrl, "https://github.com/fixture/orders.git");
+    assert.equal(review.branch, "openbot/fix-total");
+    assert.equal(review.base, "main");
+    assert.deepEqual(review.files, ["total.js"]);
+    assert.match(review.diff, /price \* quantity/);
+    assert.match(review.diff, /Commit [a-f0-9]{40}/);
+    assert.equal(review.review.reviewerBotName, "Pixel");
+    assert.equal(review.checks[0]!.exitCode, 0);
+    assert.deepEqual(manager.assertPublishReview("nova", project.id, input, run.id, review), review);
+    assert.throws(() => manager.assertPublishReview("nova", project.id, { ...input, title: "Publish something else" }, run.id, review), /changed since this proposal/);
+    assert.throws(() => manager.assertPublishReview("nova", project.id, input, run.id, { ...review, baseCommit: "a".repeat(40) }), /changed since this proposal/);
+    git(taskRoot, "config", "remote.origin.pushurl", "https://github.com/other/orders.git");
+    assert.throws(() => manager.assertPublishReview("nova", project.id, input, run.id, review), /destination changed/);
+    git(taskRoot, "config", "--unset", "remote.origin.pushurl");
+    git(taskRoot, "config", "--add", "remote.origin.url", "https://github.com/fixture/extra.git");
+    assert.throws(() => manager.preparePublishReview("nova", project.id, input, run.id), /multiple push destinations/);
+    git(taskRoot, "config", "--unset-all", "remote.origin.url");
+    git(taskRoot, "config", "remote.origin.url", "https://github.com/fixture/orders.git");
+    db.setCodeProjectAccess(project.id, "nova", { canRead: true, canWrite: true, canRun: false });
+    assert.throws(() => manager.assertPublishReview("nova", project.id, input, run.id, review), /run access/);
+  } finally { fixture.close(); }
+});
+
+test("publication review includes reverted public files from outgoing commit history", () => {
+  const fixture = publicationProjectFixture();
+  const { manager, project, run, input } = fixture;
+  try {
+    manager.write("nova", project.id, "notes.txt", "This intermediate commit also leaves the Mac.\n", run.id);
+    manager.commit("nova", project.id, "Add implementation notes", ["notes.txt"], run.id);
+    manager.write("nova", project.id, "notes.txt", "Final concise note.\n", run.id);
+    manager.commit("nova", project.id, "Refine implementation notes", ["notes.txt"], run.id);
+    fixture.evidence();
+    const review = manager.preparePublishReview("nova", project.id, input, run.id);
+    assert.equal(review.commits.length, 3);
+    assert.match(review.diff, /This intermediate commit also leaves the Mac/);
+    assert.match(review.diff, /Final concise note/);
+  } finally { fixture.close(); }
+});
+
+test("a newer rejected independent review wins when both reviews share a millisecond", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-06T13:00:00Z") });
+  const fixture = publicationProjectFixture();
+  const { manager, project, run, input, db } = fixture;
+  try {
+    const snapshot = manager.preparePublishReview("nova", project.id, input, run.id);
+    const reviewer = db.createRun({ botId: "pixel", threadId: "team-room", prompt: "Review the missing boundary case", status: "queued", parentRunId: run.id });
+    const rejected = db.recordCodeTaskReview({ sourceRunId: run.id, reviewerRunId: reviewer.id, projectId: project.id, reviewerBotId: "pixel", verdict: "changes_requested", summary: "Add a negative quantity case before publishing.", findings: ["Missing boundary coverage"], headCommit: snapshot.headCommit });
+    assert.equal(rejected.createdAt, snapshot.review.createdAt);
+    assert.equal(db.latestCodeTaskReview(run.id)!.id, rejected.id);
+    assert.throws(() => manager.assertPublishReview("nova", project.id, input, run.id, snapshot), /still needs an independent code review/);
+  } finally { fixture.close(); }
+});
+
+test("publication review refuses protected files even when later removed from the final tree", () => {
+  const fixture = publicationProjectFixture();
+  const { manager, project, run, input, git, taskRoot } = fixture;
+  try {
+    writeFileSync(path.join(taskRoot, ".private-config"), "PRIVATE=fixture\n");
+    git(taskRoot, "add", ".private-config");
+    git(taskRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "Accidental private file");
+    git(taskRoot, "rm", ".private-config");
+    git(taskRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "Remove private file");
+    fixture.evidence();
+    assert.throws(() => manager.preparePublishReview("nova", project.id, input, run.id), /protected or unreadable file paths/);
+  } finally { fixture.close(); }
+});
+
+test("publication review refuses binary and oversized changes instead of hiding their diff", () => {
+  for (const kind of ["binary", "oversized"] as const) {
+    const fixture = publicationProjectFixture();
+    const { manager, project, run, input, git, taskRoot } = fixture;
+    try {
+      const file = kind === "binary" ? "data.bin" : "large.txt";
+      writeFileSync(path.join(taskRoot, file), kind === "binary" ? Buffer.from([0, 1, 2, 3]) : "long code line\n".repeat(3_000));
+      git(taskRoot, "add", file);
+      git(taskRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "Add larger change");
+      fixture.evidence();
+      assert.throws(() => manager.preparePublishReview("nova", project.id, input, run.id), kind === "binary" ? /Binary files/ : /too large or missing/);
+    } finally { fixture.close(); }
+  }
+});
+
+test("creates separate branches, reviews diffs, and commits only named files", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "openbot-code-git-test-"));
+  try {
+    const projectRoot = path.join(root, "git-app");
+    mkdirSync(projectRoot);
+    const git = (...args: string[]) => {
+      const result = spawnSync("git", args, { cwd: projectRoot, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    git("init", "-b", "main");
+    writeFileSync(path.join(projectRoot, "app.ts"), "export const answer = 41;\n", "utf8");
+    writeFileSync(path.join(projectRoot, "notes.md"), "personal note\n", "utf8");
+    git("add", "app.ts", "notes.md");
+    git("-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Initial");
+    const db = new OpenBotDatabase(root), manager = new CodeProjectManager(db, root);
+    const project = db.createCodeProject({ name: "Git app", ...manager.inspectRoot(projectRoot), access: [{ botId: "nova", canRead: true, canWrite: true, canRun: true }] });
+    assert.throws(() => manager.commit("nova", project.id, "Unsafe main commit", ["app.ts"]), /separate Sidemates branch/);
+    assert.equal(manager.branch("nova", project.id, "openbot/fix-answer").branch, "openbot/fix-answer");
+    manager.write("nova", project.id, "app.ts", "export const answer = 42;\n");
+    writeFileSync(path.join(projectRoot, "notes.md"), "unrelated user work\n", "utf8");
+    const review = manager.review("nova", project.id);
+    assert.equal(review.branch, "openbot/fix-answer");
+    assert.match(review.diff, /answer = 42/);
+    const committed = manager.commit("nova", project.id, "Fix the answer", ["app.ts"]);
+    assert.deepEqual(committed.files, ["app.ts"]);
+    assert.match(manager.status("nova", project.id).changes.join("\n"), /notes\.md/);
+    assert.doesNotMatch(spawnSync("git", ["show", "--format=", "--name-only", "HEAD"], { cwd: projectRoot, encoding: "utf8" }).stdout, /notes\.md/);
+    db.close();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("keeps simultaneous coding tasks in isolated Git worktrees", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "openbot-code-worktree-test-"));
+  try {
+    const projectRoot = path.join(root, "shared-app");
+    mkdirSync(projectRoot);
+    const git = (cwd: string, ...args: string[]) => {
+      const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      return String(result.stdout || "").trim();
+    };
+    git(projectRoot, "init", "-b", "main");
+    writeFileSync(path.join(projectRoot, "value.ts"), "export const value = 'main';\n", "utf8");
+    git(projectRoot, "add", "value.ts");
+    git(projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Initial");
+    const initialCommit = git(projectRoot, "rev-parse", "HEAD");
+    const db = new OpenBotDatabase(root), manager = new CodeProjectManager(db, root);
+    const project = db.createCodeProject({ name: "Shared app", ...manager.inspectRoot(projectRoot), access: [{ botId: "nova", canRead: true, canWrite: true, canRun: true }, { botId: "pixel", canRead: true, canWrite: false, canRun: false }] });
+    const firstRun = db.createRun({ threadId: "team-room", botId: "nova", prompt: "Change the first value", status: "queued" });
+    const secondRun = db.createRun({ threadId: "team-room", botId: "nova", prompt: "Change the second value", status: "queued" });
+
+    const firstBranch = manager.branch("nova", project.id, "openbot/first-task", firstRun.id);
+    const secondBranch = manager.branch("nova", project.id, "openbot/second-task", secondRun.id);
+    const firstRoot = db.getCodeTaskWorkspace(firstRun.id)!.rootPath, secondRoot = db.getCodeTaskWorkspace(secondRun.id)!.rootPath;
+    assert.equal(firstBranch.isolated, true);
+    assert.equal(secondBranch.isolated, true);
+    assert.notEqual(db.getCodeTaskWorkspace(firstRun.id)?.rootPath, db.getCodeTaskWorkspace(secondRun.id)?.rootPath);
+    assert.equal(git(projectRoot, "branch", "--show-current"), "main");
+    assert.equal(readFileSync(path.join(projectRoot, "value.ts"), "utf8"), "export const value = 'main';\n");
+
+    const firstEdit = manager.write("nova", project.id, "value.ts", "export const value = 'first';\n", firstRun.id);
+    const secondEdit = manager.write("nova", project.id, "value.ts", "export const value = 'second';\n", secondRun.id);
+    assert.equal(manager.read("nova", project.id, "value.ts", firstRun.id).content, "export const value = 'first';\n");
+    assert.equal(manager.read("nova", project.id, "value.ts", secondRun.id).content, "export const value = 'second';\n");
+    assert.equal(manager.read("nova", project.id, "value.ts").content, "export const value = 'main';\n");
+    assert.equal(manager.review("nova", project.id, firstRun.id).workspace?.branch, "openbot/first-task");
+    assert.match(manager.review("nova", project.id, firstRun.id).diff, /value = 'first'/);
+    assert.equal(db.getCodeProjectEdit(firstEdit.editId)?.workspaceRunId, firstRun.id);
+
+    manager.commit("nova", project.id, "Finish first task", ["value.ts"], firstRun.id);
+    assert.throws(() => manager.prepareIndependentReview("nova", project.id, firstRun.id), /Run project checks/);
+    // Storage-level fixture for review binding; real commands are covered by code-checks.test.ts.
+    db.saveCodeCheck({ id: "fixture-check", runId: firstRun.id, projectId: project.id, command: "fixture", headCommit: manager.currentCommit("nova", project.id, firstRun.id), status: "passed", exitCode: 0, startedAt: "2026-09-05T00:00:00Z", finishedAt: "2026-09-05T00:00:01Z", detail: "Test fixture" });
+    const preparedReview = manager.prepareIndependentReview("nova", project.id, firstRun.id);
+    assert.match(preparedReview.review.diff, /Committed task changes/);
+    assert.match(preparedReview.review.diff, /value = 'first'/);
+    const reviewerRun = db.createRun({ threadId: "team-room", botId: "pixel", prompt: "Independently review the first task", status: "queued", parentRunId: firstRun.id });
+    const savedReview = db.recordCodeTaskReview({ sourceRunId: firstRun.id, reviewerRunId: reviewerRun.id, projectId: project.id, reviewerBotId: "pixel", verdict: "approved", summary: "The focused change is correct.", findings: [], headCommit: preparedReview.headCommit });
+    assert.equal(savedReview.reviewerBotName, "Pixel");
+    assert.equal(db.latestCodeTaskReview(firstRun.id)?.headCommit, preparedReview.headCommit);
+    assert.equal(git(projectRoot, "rev-parse", "HEAD"), initialCommit);
+    const temporaryEdit = manager.write("nova", project.id, "temporary.ts", "temporary\n", secondRun.id);
+    assert.match(manager.review("nova", project.id, secondRun.id).diff, /New files/);
+    assert.match(manager.review("nova", project.id, secondRun.id).diff, /\+temporary/);
+    manager.restoreEdit(temporaryEdit.editId);
+    assert.throws(() => manager.read("nova", project.id, "temporary.ts", secondRun.id), /not found/);
+    manager.restoreEdit(secondEdit.editId);
+    assert.equal(manager.disconnectProject(project.id), true);
+    assert.equal(existsSync(firstRoot), false);
+    assert.equal(existsSync(secondRoot), false);
+    assert.equal(db.getCodeTaskWorkspace(firstRun.id)?.status, "archived");
+    assert.equal(git(projectRoot, "show", "openbot/first-task:value.ts"), "export const value = 'first';");
+    db.close();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("restores agent edits without overwriting newer file content", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "openbot-code-restore-test-"));
+  try {
+    const projectRoot = path.join(root, "safe-app");
+    mkdirSync(projectRoot); writeFileSync(path.join(projectRoot, "main.txt"), "original\n", "utf8");
+    const db = new OpenBotDatabase(root), manager = new CodeProjectManager(db, root);
+    const project = db.createCodeProject({ name: "Safe app", ...manager.inspectRoot(projectRoot), access: [{ botId: "nova", canRead: true, canWrite: true, canRun: false }] });
+    const first = manager.write("nova", project.id, "main.txt", "agent version\n");
+    writeFileSync(path.join(projectRoot, "main.txt"), "newer user version\n", "utf8");
+    assert.throws(() => manager.restoreEdit(first.editId), /left the newer work untouched/);
+    writeFileSync(path.join(projectRoot, "main.txt"), "agent version\n", "utf8");
+    assert.equal(manager.restoreEdit(first.editId).restored, true);
+    assert.equal(readFileSync(path.join(projectRoot, "main.txt"), "utf8"), "original\n");
+    assert.equal(db.getCodeProjectEdit(first.editId)?.reversible, false);
+    const created = manager.write("nova", project.id, "new.txt", "temporary\n");
+    manager.restoreEdit(created.editId);
+    assert.equal(readFileSync(path.join(projectRoot, "main.txt"), "utf8"), "original\n");
+    assert.throws(() => readFileSync(path.join(projectRoot, "new.txt"), "utf8"));
+    db.close();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

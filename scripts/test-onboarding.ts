@@ -1,0 +1,205 @@
+// Genuine empty-studio onboarding through the shipped web UI and disposable
+// host. Provider discovery is real, not intercepted. Runtime installation is a
+// prerequisite. Discovery may refresh its public model catalog, but no sign-in,
+// model task, credential or connected-service action is used.
+import assert from "node:assert/strict";
+import { friendlyModelName } from "../src/shared/provider-config.js";
+import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { chromium } from "playwright-core";
+import type { AppState, Bot, ProviderInstance } from "../src/shared/types.js";
+
+const data = mkdtempSync(path.join(tmpdir(), "openbot-onboarding-"));
+const runtimeHome = path.join(data, "runtime-home");
+mkdirSync(runtimeHome, { recursive: true });
+const output = "/tmp/openbot-onboarding-qa";
+mkdirSync(output, { recursive: true });
+const socket = createServer();
+await new Promise<void>((resolve) => socket.listen(0, "127.0.0.1", resolve));
+const port = (socket.address() as { port: number }).port;
+await new Promise<void>((resolve) => socket.close(() => resolve()));
+const base = "http://127.0.0.1:" + port;
+const child = spawn(process.execPath, ["--import", "tsx", "src/server/index.ts"], {
+  cwd: path.resolve(import.meta.dirname, ".."), stdio: "ignore",
+  env: {
+    PATH: process.env.PATH,
+    LANG: process.env.LANG || "en_US.UTF-8",
+    TMPDIR: process.env.TMPDIR,
+    // Isolate the runtime's real sign-in/config/cache paths. A developer's
+    // installed executable may be discovered, but their accounts are not used.
+    HOME: runtimeHome,
+    XDG_CONFIG_HOME: path.join(runtimeHome, ".config"),
+    XDG_DATA_HOME: path.join(runtimeHome, ".local/share"),
+    XDG_CACHE_HOME: path.join(runtimeHome, ".cache"),
+    OPENBOT_LOAD_ENV: "0", OPENBOT_DATA_DIR: data, OPENBOT_PORT: String(port), OPENBOT_HOST: "127.0.0.1", OPENBOT_APP_URL: base, OPENBOT_DEPLOYMENT_MODE: "local", NODE_ENV: "production",
+  },
+});
+let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+async function request(route: string, body?: unknown) {
+  return fetch(base + route, { method: body === undefined ? "GET" : "POST", headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(30_000) });
+}
+try {
+  let ready = false;
+  for (let n = 0; n < 100; n++) {
+    try { if ((await request("/api/healthz")).ok) { ready = true; break; } } catch {}
+    await delay(150);
+  }
+  assert.ok(ready, "Disposable host did not start");
+  const discovery = await (await request("/api/provider")).json() as { cliAvailable: boolean; instances: Array<{ connected: boolean }> };
+  assert.equal(discovery.cliAvailable, true, "Install the pinned OpenCode execution runtime before this real onboarding test; saving an API connection alone cannot run a model");
+  assert.ok(discovery.instances.every((item) => !item.connected), "The isolated runtime has no inherited account connections");
+  const initial: AppState = await (await request("/api/state")).json();
+  assert.equal(initial.bots.length, 0, "A genuinely fresh studio has no preset cast");
+  assert.equal(initial.studioRuns.length, 0);
+  assert.equal((await request("/api/bots", { name: "Helper", emoji: "x", color: "#123456", role: "Helper", instructions: "Help" })).status, 400, "No teammate is created without explicit AI setup");
+  assert.equal((await request("/api/messages", { threadId: "team-room", body: "Hello" })).status, 400, "A studio without teammates cannot start work");
+
+  browser = await chromium.launch({ executablePath: process.env.OPENBOT_CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const unexpected: string[] = [], errors: string[] = [];
+  let connectionWrites = 0, teammateWrites = 0;
+  context.on("page", (page) => page.on("pageerror", (error) => errors.push(error.message)));
+  await context.route("**/*", async (route) => {
+    const req = route.request(), url = new URL(req.url());
+    if (url.origin !== base) {
+      unexpected.push("External browser request blocked: " + url.origin);
+      return route.abort("blockedbyclient");
+    }
+    if (!["GET", "HEAD", "OPTIONS"].includes(req.method())) {
+      if (req.method() === "POST" && url.pathname === "/api/providers") connectionWrites++;
+      else if (req.method() === "POST" && url.pathname === "/api/bots") teammateWrites++;
+      else {
+        unexpected.push(req.method() + " " + url.pathname);
+        return route.abort("blockedbyclient");
+      }
+    }
+    return route.continue();
+  });
+  const page = await context.newPage();
+  page.setDefaultTimeout(15_000);
+  // Start from a Mac with no AI connected, whatever this host has signed in to,
+  // until the test saves its own connection.
+  await page.route("**/api/provider", async (route) => {
+    if (connectionWrites > 0 || route.request().method() !== "GET") return route.fallback();
+    const response = await route.fetch();
+    const status = await response.json() as { instances?: Array<{ connected?: boolean }> };
+    await route.fulfill({ response, json: { ...status, instances: (status.instances || []).map((instance) => ({ ...instance, connected: false })) } });
+  });
+  await page.goto(base + "/studio.html");
+  await page.getByRole("heading", { name: "One step: connect an AI." }).waitFor();
+  await page.getByRole("button", { name: "Make your own teammate" }).click();
+  const creation = page.getByRole("dialog");
+  await creation.getByLabel("Name", { exact: true }).fill("Remy");
+  await creation.getByLabel("Their job").fill("Help plan my week");
+  const instructions = "Find a realistic plan. Ask before changing my calendar.";
+  // Instructions live behind the Advanced disclosure in the new form.
+  await creation.locator("summary", { hasText: "Advanced" }).click();
+  await creation.getByLabel("Additional instructions", { exact: true }).fill(instructions);
+  assert.ok(await creation.getByRole("button", { name: "Create teammate", exact: true }).isDisabled());
+  await creation.getByText("Connect an AI to start chatting", { exact: true }).waitFor();
+  await page.screenshot({ path: path.join(output, "connect-ai-desktop.png") });
+  const browse = creation.getByRole("switch", { name: "Can look things up on the web" });
+  assert.equal(await browse.getAttribute("aria-checked"), "true", "Web browsing is a visible choice that starts on");
+  await browse.click();
+  assert.equal(await browse.getAttribute("aria-checked"), "false");
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await creation.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), "Connection step fits a phone");
+  await page.screenshot({ path: path.join(output, "connect-ai-mobile.png") });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  // Free and already-owned options come first, right in the sheet.
+  await creation.getByText("Start free", { exact: true }).waitFor();
+  await creation.getByLabel("Paste your Gemini API key").waitFor();
+  assert.equal(await creation.getByRole("link", { name: /Get a free key/ }).getAttribute("href"), "https://aistudio.google.com/apikey");
+  await creation.getByText("Use a subscription you already have", { exact: true }).waitFor();
+  const popup = page.waitForEvent("popup");
+  await creation.getByRole("link", { name: /More AI settings/ }).click();
+  const settings = await popup;
+  settings.setDefaultTimeout(45_000);
+  // The provider setup renders as a full panel in the separate tab now.
+  const providerSheet = settings.locator(".provider-settings");
+  await providerSheet.waitFor();
+  await providerSheet.getByRole("radio", { name: "API Keys & Local Models", exact: true }).click();
+  await providerSheet.getByRole("button", { name: "Add API or local model", exact: true }).click();
+  await providerSheet.getByRole("combobox", { name: "Provider", exact: true }).selectOption("custom");
+  await providerSheet.getByLabel("Connection name", { exact: true }).fill("Local beta test");
+  await providerSheet.getByLabel("API address", { exact: true }).fill("http://127.0.0.1:1/v1");
+  await providerSheet.getByLabel("Model IDs", { exact: true }).fill("chosen-model");
+  assert.equal(await providerSheet.getByLabel("API key", { exact: true }).inputValue(), "");
+  await settings.screenshot({ path: path.join(output, "provider-setup-desktop.png"), fullPage: true });
+  await settings.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await providerSheet.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), "Provider setup fits a phone");
+  await settings.screenshot({ path: path.join(output, "provider-setup-mobile.png"), fullPage: true });
+  const savedResponse = settings.waitForResponse((response) => response.url() === base + "/api/providers" && response.request().method() === "POST");
+  await providerSheet.getByRole("button", { name: "Save connection", exact: true }).click();
+  const savedResult = await savedResponse;
+  assert.equal(savedResult.status(), 201);
+  const saved: ProviderInstance = await savedResult.json();
+  assert.equal(saved.name, "Local beta test");
+  assert.equal(saved.hasSecret, false, "No key was fabricated or copied");
+  assert.deepEqual(saved.apiConfig?.modelIds, ["chosen-model"]);
+  await providerSheet.getByText("Connection saved. Choose it for a teammate below. It hasn’t been tested yet.", { exact: true }).waitFor();
+  assert.equal(connectionWrites, 1);
+
+  // Return to the original creation sheet. Headless environments can omit an
+  // OS focus transition, so dispatch the actual browser focus event as well.
+  await page.bringToFront();
+  const refreshed = page.waitForResponse((response) => response.url() === base + "/api/provider" && response.request().method() === "GET");
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  assert.ok((await refreshed).ok(), "Returning reloads actual provider discovery");
+  assert.equal(await creation.getByLabel("Name", { exact: true }).inputValue(), "Remy");
+  assert.equal(await creation.getByLabel("Their job").inputValue(), "Help plan my week");
+  assert.equal(await creation.getByRole("textbox", { name: "Additional instructions", exact: true }).inputValue(), instructions);
+  const service = creation.getByRole("combobox", { name: "AI connection", exact: true });
+  // Nobody has to pick an AI: Automatic is preselected once one is connected.
+  assert.equal(await service.innerText(), "Automatic", "Automatic is the starting choice");
+  const modelId = "openbot-" + saved.id + "/chosen-model";
+  assert.ok(await creation.getByRole("button", { name: "Create teammate", exact: true }).isEnabled(), "Automatic is ready without choosing a model");
+  assert.equal(await creation.getByRole("combobox", { name: "Model", exact: true }).count(), 0, "No model picker on Automatic");
+  await service.click();
+  await creation.getByRole("option", { name: "Local beta test", exact: true }).click();
+  // Choosing the connection is the only decision: its own model is preselected.
+  const model = creation.getByRole("combobox", { name: "Model", exact: true });
+  assert.equal(await model.innerText(), friendlyModelName(modelId), "The connection's model is preselected");
+  assert.ok(
+    await creation.getByRole("button", { name: "Create teammate", exact: true }).isEnabled(),
+    "The form is ready once a connection is chosen",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await creation.evaluate((element) => element.scrollWidth <= element.clientWidth + 1));
+  await page.screenshot({ path: path.join(output, "ready-to-create-mobile.png"), fullPage: true });
+  const createdResponse = page.waitForResponse((response) => response.url() === base + "/api/bots" && response.request().method() === "POST");
+  await creation.getByRole("button", { name: "Create teammate", exact: true }).click();
+  const createdResult = await createdResponse;
+  assert.equal(createdResult.status(), 201);
+  const created: Bot = await createdResult.json();
+  assert.equal(created.name, "Remy");
+  assert.equal(created.providerInstanceId, saved.id);
+  assert.equal(created.model, modelId);
+  assert.equal(created.browserEnabled, false, "Turning the switch off is honored");
+  assert.equal(created.computerEnabled, false);
+  assert.equal(teammateWrites, 1);
+  await creation.waitFor({ state: "detached" });
+  await page.reload();
+  await page.getByRole("heading", { name: "What’s on your mind?" }).waitFor();
+  const final: AppState = await (await request("/api/state?threadId=" + encodeURIComponent(created.threadId))).json();
+  assert.equal(final.bots.length, 1);
+  assert.equal(final.bots[0]!.providerInstanceId, saved.id);
+  assert.equal(final.bots[0]!.model, modelId);
+  assert.equal(final.studioRuns.length, 0, "Setup never invokes a model");
+  assert.equal(final.approvals.length, 0);
+  assert.equal(final.settings.macAccessEnabled, false);
+  assert.equal(final.messages.filter((message) => message.senderType === "bot").length, 0, "Setup never fabricates a reply");
+  assert.deepEqual(unexpected, []);
+  assert.deepEqual(errors, []);
+  console.log("PASS: actual empty-studio UI → separate API/local setup → saved, untested connection → focus refresh with draft preserved → explicit provider/model choice → real teammate creation → persisted reload. Zero model jobs, account sign-ins, copied keys or browser/computer grants. Desktop and 390px setup fit.");
+} finally {
+  await browser?.close();
+  child.kill("SIGTERM");
+  for (let n = 0; n < 40 && child.exitCode === null && child.signalCode === null; n++) await delay(100);
+  if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await new Promise<void>((resolve) => child.once("close", resolve)); }
+  rmSync(data, { recursive: true, force: true });
+}

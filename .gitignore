@@ -1,0 +1,54 @@
+node_modules/
+dist/
+dist-staging/
+.openbot/
+.openbot-staging/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+coverage/
+
+# Runtime databases, signing credentials and per-user native state are never source.
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.p8
+*.p12
+*.pfx
+*.mobileprovision
+*.xcuserstate
+xcuserdata/
+DerivedData/
+
+# Apple built-in AI bridge, built by npm run build on a Mac
+/bin/apple-ai
+
+# Desktop shell build input and output
+desktop/runtime/
+desktop/release/
+desktop/node_modules/
+
+# Per-machine CLI state and generated Electron executable locator.
+.local/
+desktop/path.txt
+
+# Local-only dev automation (personal paths, staging tokens) — never ship.
+scripts/tmp-*.mjs
+scripts/courier-watch.mjs
+scripts/wake-builder.mjs
+scripts/wake-supervisor.mjs
+scripts/com.openbot.*.plist
+
+# Finder archive metadata, never application assets.
+__MACOSX/
+._*
+
+# Generated platform runtimes and local QA logs
+dist-release/
+
+# Generated demo clips (scripts/record-demo.mjs)
+# Marketing plans, drafts and reports are private to the maintainer: never commit them.
+/marketing/

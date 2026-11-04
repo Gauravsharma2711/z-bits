@@ -1,0 +1,13 @@
+<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="zbitsGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="50%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="20" height="20" rx="5" fill="#0f172a" stroke="url(#zbitsGrad)" stroke-width="1.5"/>
+  <path d="M7 7.5 H17 L8.5 16.5 H17" stroke="url(#zbitsGrad)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="7" cy="7.5" r="1.2" fill="#38bdf8"/>
+  <circle cx="17" cy="16.5" r="1.2" fill="#8b5cf6"/>
+</svg>

@@ -1,0 +1,435 @@
+import { randomBytes } from "node:crypto";
+import { z } from "zod";
+import type { TodoistTaskSummary } from "../shared/types.js";
+import type { OpenBotDatabase } from "./database.js";
+import { ApprovalReviewChangedError, ApprovedConnectorOutcomeUncertainError } from "./approval-review-binding.js";
+
+type FetchLike = typeof fetch;
+type Json = Record<string, unknown>;
+type TodoistCredentials = { accessToken: string; refreshToken?: string; expiresAt?: string };
+
+export type TodoistActivitySummary = {  id: string;
+  eventType: "added" | "updated" | "completed" | string;
+  objectId: string;
+  content: string;
+  occurredAt: string;
+  projectId: string;
+};
+
+const SCOPE = "data:read_write";
+
+/** A Todoist object that does not exist (readback target gone). Distinct from
+ * transport failures: single-object readers map this to null, never to a retry. */
+export class TodoistNotFoundError extends Error {
+  constructor(path = "") {
+    super(path ? `Todoist did not find ${path}.` : "That Todoist task is no longer available.");
+  }
+}
+
+/** Only a full matching readback is proof. A matching id, an HTTP 200, or a
+ * confident model report is not. Fields the caller left unspecified take
+ * server defaults (inbox project, normal priority, no due date), so only
+ * explicitly requested fields bind the match — except an unrequested due
+ * date, which must stay absent. */
+export function todoistTaskMatchesCreate(
+  task: TodoistTaskSummary,
+  requested: { content: string; description: string; dueString: string; projectId: string; priority: number },
+): boolean {
+  if (!task.id || !task.content) return false;
+  if (task.content !== requested.content) return false;
+  if (task.description !== requested.description) return false;
+  if (requested.projectId && task.projectId !== requested.projectId) return false;
+  if (task.priority !== requested.priority) return false;
+  if (!requested.dueString && task.due !== null) return false;
+  return true;
+}
+
+/** P04b: reviewed correction of one exact task. Every field is optional, but
+ * at least one change is required. Empty strings are real values, not "keep
+ * old value": description "" asks Todoist to clear the description and
+ * clearDue asks it to drop the due date. Both are verified by readback —
+ * a server that ignores them yields an uncertain outcome, never a false
+ * success. Priority 0 is rejected: Todoist priorities are 1-4. */
+export const todoistTaskUpdateInput = z.object({
+  taskId: z.string().trim().min(1).max(200),
+  content: z.string().trim().min(1).max(500).optional(),
+  description: z.string().trim().max(4_000).optional(),
+  dueString: z.string().trim().min(1).max(200).optional(),
+  clearDue: z.boolean().optional(),
+  priority: z.number().int().min(1).max(4).optional(),
+}).refine(
+  (value) => value.content !== undefined || value.description !== undefined || value.dueString !== undefined || value.clearDue === true || value.priority !== undefined,
+  { message: "Say what should change: title, description, due date or priority." },
+).refine(
+  (value) => !(value.dueString !== undefined && value.clearDue === true),
+  { message: "Change the due date or clear it, not both in one review." },
+);
+
+export const todoistTaskCompleteInput = z.object({
+  taskId: z.string().trim().min(1).max(200),
+});
+
+export type TodoistTaskUpdate = z.infer<typeof todoistTaskUpdateInput>;
+
+/** Only explicitly requested fields bind the match. dueString is a human
+ * phrase the server normalizes, so the readback only needs to still carry a
+ * due date; clearDue requires its absence. */
+export function todoistTaskMatchesUpdate(
+  task: TodoistTaskSummary,
+  requested: { content?: string; description?: string; dueString?: string; clearDue?: boolean; priority?: number },
+): boolean {
+  if (!task.id) return false;
+  if (requested.content !== undefined && task.content !== requested.content) return false;
+  if (requested.description !== undefined && task.description !== requested.description) return false;
+  if (requested.priority !== undefined && task.priority !== requested.priority) return false;
+  if (requested.clearDue === true) {
+    if (task.due !== null) return false;
+  } else if (requested.dueString !== undefined) {
+    if (task.due === null) return false;
+  }
+  return true;
+}
+
+function cleanText(value: unknown, limit = 2_000) {
+  return typeof value === "string" ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").trim().slice(0, limit) : "";
+}
+
+function expiresAt(seconds: unknown) {
+  const amount = Number(seconds);
+  return Number.isFinite(amount) && amount > 0 ? new Date(Date.now() + amount * 1_000).toISOString() : undefined;
+}
+
+export class TodoistConnector {
+  private attempts = new Map<string, number>();
+
+  constructor(private db: OpenBotDatabase, readonly redirectUri: string, private fetcher: FetchLike = fetch) {}
+
+  oauthInProgress() {
+    this.pruneAttempts();
+    return this.attempts.size > 0;
+  }
+
+  async beginOAuth() {
+    let configured = this.db.oauthConnectorCredentials<TodoistCredentials>("todoist");
+    if (!configured) {
+      const response = await this.fetcher("https://api.todoist.com/oauth/register", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Sidemates", redirect_uris: [this.redirectUri], scope: SCOPE,
+          grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "client_secret_post",
+        }),
+      });
+      const result = await response.json().catch(() => ({})) as Json;
+      const clientId = cleanText(result.client_id, 500), clientSecret = cleanText(result.client_secret, 2_000);
+      if (!response.ok || !clientId || !clientSecret) {
+        throw new Error(`Todoist could not prepare one-click sign-in (${cleanText(result.error_description || result.error, 300) || response.status}). Try again shortly.`);
+      }
+      this.db.configureOAuthConnector({ id: "todoist", kind: "todoist_oauth", name: "Todoist", clientId, clientSecret });
+      configured = this.db.oauthConnectorCredentials<TodoistCredentials>("todoist");
+    }
+    if (!configured) throw new Error("Todoist could not prepare sign-in.");
+    const state = randomBytes(24).toString("base64url");
+    this.attempts.set(state, Date.now());
+    const params = new URLSearchParams({ client_id: configured.clientId, redirect_uri: this.redirectUri, scope: SCOPE, state, response_type: "code" });
+    return { url: `https://app.todoist.com/oauth/authorize?${params}`, state };
+  }
+
+  async completeOAuth(state: string, code: string) {
+    this.pruneAttempts();
+    if (!this.attempts.delete(state)) throw new Error("That Todoist sign-in expired. Start it again from Sidemates.");
+    const configured = this.db.oauthConnectorCredentials<TodoistCredentials>("todoist");
+    if (!configured) throw new Error("The Todoist connection is missing.");
+    const result = await this.tokenRequest(configured.clientId, configured.clientSecret, { grant_type: "authorization_code", code, redirect_uri: this.redirectUri });
+    const accessToken = cleanText(result.access_token, 4_000);
+    if (!accessToken) throw new Error("Todoist did not return a usable access token.");
+    const credentials: TodoistCredentials = {
+      accessToken,
+      ...(cleanText(result.refresh_token, 4_000) ? { refreshToken: cleanText(result.refresh_token, 4_000) } : {}),
+      ...(expiresAt(result.expires_in) ? { expiresAt: expiresAt(result.expires_in) } : {}),
+    };
+    this.db.completeOAuthConnector("todoist", credentials, "Todoist account", [SCOPE]);
+    try {
+      const user = await this.request("/api/v1/user");
+      const account = cleanText(user.full_name || user.name || user.email, 200);
+      if (account) this.db.completeOAuthConnector("todoist", credentials, account, [SCOPE]);
+    } catch { /* the task connection is still valid even if profile lookup is unavailable */ }
+    return this.db.getConnector("todoist")!;
+  }
+
+  async health() {
+    const user = await this.request("/api/v1/user");
+    return { name: cleanText(user.full_name || user.name, 200), email: cleanText(user.email, 200) };
+  }
+
+  async tasks(query = "", maxResults = 20): Promise<TodoistTaskSummary[]> {
+    const params = new URLSearchParams({ limit: String(Math.max(1, Math.min(Math.round(maxResults), 50))) });
+    const result = await this.request(`/api/v1/tasks?${params}`);
+    const rows = Array.isArray(result.results) ? result.results : Array.isArray(result) ? result : [];
+    const needle = cleanText(query, 500).toLocaleLowerCase();
+    return rows.map((row) => this.taskSummary(row)).filter((row): row is TodoistTaskSummary => Boolean(row))
+      .filter((row) => !needle || `${row.content}\n${row.description}`.toLocaleLowerCase().includes(needle)).slice(0, 20);
+  }
+
+  async activities(maxResults = 50): Promise<TodoistActivitySummary[]> {
+    const params = new URLSearchParams({ object_type: "item", limit: String(Math.max(1, Math.min(Math.round(maxResults), 200))) });
+    const result = await this.request(`/api/v1/activities?${params}`);
+    const rows = Array.isArray(result.results) ? result.results : Array.isArray(result) ? result : [];
+    return rows.map((value) => {
+      if (!value || typeof value !== "object") return null;
+      const row = value as Json;
+      const extra = row.extra_data && typeof row.extra_data === "object" ? row.extra_data as Json : {};
+      const id = cleanText(row.id || row.event_id, 240);
+      const objectId = cleanText(row.object_id || extra.id, 240);
+      const occurredAt = cleanText(row.event_date || row.occurred_at || row.event_time, 100);
+      if (!id || !occurredAt) return null;
+      return {
+        id,
+        eventType: cleanText(row.event_type || row.type, 80).toLowerCase(),
+        objectId,
+        content: cleanText(extra.content || extra.name || row.content, 500),
+        occurredAt,
+        projectId: cleanText(row.parent_project_id || extra.project_id, 240),
+      } satisfies TodoistActivitySummary;
+    }).filter((value): value is TodoistActivitySummary => Boolean(value));
+  }
+
+  async workProjects() {
+    const result = await this.request("/api/v1/projects?limit=100");
+    if (!Array.isArray(result.results)) throw new Error("Todoist returned no readable project list.");
+    return { choices: result.results.slice(0, 100).flatMap((value) => {
+      const row = value as Json, id = cleanText(row.id, 200), label = cleanText(row.name, 200);
+      return id && label ? [{ service: "todoist" as const, id, label }] : [];
+    }), limited: Boolean(result.next_cursor) || result.results.length >= 100 };
+  }
+
+  async workTasks(projectId: string, signal: AbortSignal) {
+    const result = await this.request(`/api/v1/tasks?${new URLSearchParams({ project_id: projectId, limit: "20" })}`, { signal });
+    if (!Array.isArray(result.results)) throw new Error("Todoist returned no readable task list.");
+    const rows = result.results, tasks = rows.slice(0, 20).map((row) => this.taskSummary(row)).filter((row): row is TodoistTaskSummary => Boolean(row && row.projectId === projectId && !row.completed));
+    return { tasks, hasMore: Boolean(result.next_cursor) || rows.length > 20, omitted: tasks.length !== rows.length };
+  }
+
+  async create(input: { content: string; description?: string; dueString?: string; projectId?: string; priority?: number }) {
+    const content = cleanText(input.content, 500), description = cleanText(input.description, 4_000), dueString = cleanText(input.dueString, 200), projectId = cleanText(input.projectId, 200);
+    if (!content) throw new Error("Give the Todoist task a title first.");
+    const priority = input.priority ? Math.max(1, Math.min(Math.round(input.priority), 4)) : undefined;
+    const requested = { content, description, dueString, projectId, priority: priority ?? 1 };
+    // P04a: the account that approves this write must be the account that
+    // performs it and the account that is read back. A reconnect or disconnect
+    // mid-flight invalidates the review instead of inspecting a new account.
+    const authorizationVersion = this.db.connectorAuthorizationVersion("todoist");
+    const assertSameAccount = () => {
+      if (this.db.connectorAuthorizationVersion("todoist") !== authorizationVersion) throw new ApprovalReviewChangedError(true);
+    };
+    let posted: Json;
+    try {
+      posted = await this.request("/api/v1/tasks", { method: "POST", body: {
+        content, ...(description ? { description } : {}), ...(dueString ? { due_string: dueString } : {}), ...(projectId ? { project_id: projectId } : {}),
+        ...(priority ? { priority } : {}),
+      } });
+      assertSameAccount();
+    } catch (error) {
+      if (error instanceof ApprovalReviewChangedError) throw error;
+      assertSameAccount();
+      // Todoist assigns the task id server-side, so a lost POST response has
+      // no addressable readback. It stays uncertain: never silently repeated
+      // (that could duplicate the task) and never reported as delivered.
+      throw new ApprovedConnectorOutcomeUncertainError();
+    }
+    const created = this.taskSummary(posted);
+    if (created && todoistTaskMatchesCreate(created, requested)) return { task: created, recovered: false };
+    const postedId = created?.id || (posted && typeof posted.id === "string" ? cleanText(posted.id, 200) : "");
+    if (!postedId) {
+      // A 200 without an addressable task id cannot be confirmed or safely
+      // repeated. Uncertain, not failed: the task may exist.
+      throw new ApprovedConnectorOutcomeUncertainError();
+    }
+    // Exactly one readback operation, no sleep loop and no second insert.
+    // Not found is NOT evidence that the original request was not applied.
+    assertSameAccount();
+    let read: TodoistTaskSummary | null = null;
+    try {
+      read = await this.getTask(postedId);
+      assertSameAccount();
+    } catch (error) {
+      if (error instanceof ApprovalReviewChangedError) throw error;
+      throw new ApprovedConnectorOutcomeUncertainError();
+    }
+    if (read && todoistTaskMatchesCreate(read, requested)) return { task: read, recovered: true };
+    // A missing or mismatched readback is not evidence the task was created
+    // correctly — and repeating the POST could duplicate it.
+    throw new ApprovedConnectorOutcomeUncertainError();
+  }
+
+  /** Independent readback of one task by id. A missing task is null (a
+   * correction target that no longer exists); any other failure throws. */
+  async getTask(id: string): Promise<TodoistTaskSummary | null> {
+    const clean = cleanText(id, 200);
+    if (!clean) return null;
+    try {
+      return this.taskSummary(await this.request(`/api/v1/tasks/${encodeURIComponent(clean)}`));
+    } catch (error) {
+      if (error instanceof TodoistNotFoundError) return null;
+      throw error;
+    }
+  }
+
+  /** P04b: correct one exact task in the approving account. The task is
+   * addressed by its stable id — never by title — and the approving account
+   * is pinned for the whole call. Only requested fields are sent (explicit
+   * undefined checks, so an intentional "" is not dropped as falsy); the
+   * readback must show every requested change or the outcome is uncertain. */
+  async update(id: string, input: { content?: string; description?: string; dueString?: string; clearDue?: boolean; priority?: number }) {
+    const taskId = cleanText(id, 200);
+    if (!taskId) throw new Error("Give the exact Todoist task id from the task list.");
+    const parsed = todoistTaskUpdateInput.safeParse({ ...input, taskId });
+    if (!parsed.success) throw new Error(parsed.error.issues[0]?.message || "That Todoist change is incomplete.");
+    const changes = parsed.data;
+    const authorizationVersion = this.db.connectorAuthorizationVersion("todoist");
+    const assertSameAccount = () => {
+      if (this.db.connectorAuthorizationVersion("todoist") !== authorizationVersion) throw new ApprovalReviewChangedError(true);
+    };
+    let base: TodoistTaskSummary | null = null;
+    try {
+      base = await this.getTask(taskId);
+      assertSameAccount();
+    } catch (error) {
+      if (error instanceof ApprovalReviewChangedError) throw error;
+      throw new ApprovedConnectorOutcomeUncertainError();
+    }
+    if (!base) throw new TodoistNotFoundError(taskId);
+    if (base.completed) throw new Error("That Todoist task is already completed. Reopen it in Todoist before editing it.");
+    const body: Json = {
+      ...(changes.content !== undefined ? { content: changes.content } : {}),
+      ...(changes.description !== undefined ? { description: changes.description } : {}),
+      ...(changes.priority !== undefined ? { priority: changes.priority } : {}),
+      ...(changes.dueString !== undefined ? { due_string: changes.dueString } : {}),
+      ...(changes.clearDue === true ? { due_string: "" } : {}),
+    };
+    try {
+      await this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}`, { method: "POST", body });
+      assertSameAccount();
+    } catch (error) {
+      if (error instanceof ApprovalReviewChangedError || error instanceof TodoistNotFoundError) throw error;
+      assertSameAccount();
+      throw new ApprovedConnectorOutcomeUncertainError();
+    }
+    assertSameAccount();
+    let read: TodoistTaskSummary | null = null;
+    try {
+      read = await this.getTask(taskId);
+      assertSameAccount();
+    } catch (error) {
+      if (error instanceof ApprovalReviewChangedError || error instanceof TodoistNotFoundError) throw error;
+      throw new ApprovedConnectorOutcomeUncertainError();
+    }
+    if (read && todoistTaskMatchesUpdate(read, changes)) return { task: read, base };
+    throw new ApprovedConnectorOutcomeUncertainError();
+  }
+
+  /** P04c: complete one exact task in the approving account. Closing is
+   * idempotent: an already-completed task succeeds without another write.
+   * A recurring task reschedules on close, so a changed due date with the
+   * same id also counts as completed. A missing readback is uncertain —
+   * a close cannot be told apart from a delete without it. */
+  async complete(id: string) {
+    const taskId = cleanText(id, 200);
+    if (!taskId) throw new Error("Give the exact Todoist task id from the task list.");
+    const parsed = todoistTaskCompleteInput.safeParse({ taskId });
+    if (!parsed.success) throw new Error("Give the exact Todoist task id from the task list.");
+    const authorizationVersion = this.db.connectorAuthorizationVersion("todoist");
+    const assertSameAccount = () => {
+      if (this.db.connectorAuthorizationVersion("todoist") !== authorizationVersion) throw new ApprovalReviewChangedError(true);
+    };
+    let base: TodoistTaskSummary | null = null;
+    try {
+      base = await this.getTask(taskId);
+      assertSameAccount();
+    } catch (error) {
+      if (error instanceof ApprovalReviewChangedError) throw error;
+      throw new ApprovedConnectorOutcomeUncertainError();
+    }
+    if (!base) throw new TodoistNotFoundError(taskId);
+    if (base.completed) return { task: base, alreadyCompleted: true as const };
+    try {
+      await this.request(`/api/v1/tasks/${encodeURIComponent(taskId)}/close`, { method: "POST" });
+      assertSameAccount();
+    } catch (error) {
+      if (error instanceof ApprovalReviewChangedError || error instanceof TodoistNotFoundError) throw error;
+      assertSameAccount();
+      throw new ApprovedConnectorOutcomeUncertainError();
+    }
+    assertSameAccount();
+    let read: TodoistTaskSummary | null = null;
+    try {
+      read = await this.getTask(taskId);
+      assertSameAccount();
+    } catch (error) {
+      if (error instanceof ApprovalReviewChangedError || error instanceof TodoistNotFoundError) throw error;
+      throw new ApprovedConnectorOutcomeUncertainError();
+    }
+    if (read && (read.completed || (base.due !== null && read.due !== null && read.due !== base.due))) {
+      return { task: read, alreadyCompleted: false as const };
+    }
+    throw new ApprovedConnectorOutcomeUncertainError();
+  }
+
+  async disconnect() {
+    this.attempts.clear();
+    return this.db.disconnectOAuthConnector("todoist");
+  }
+
+  private taskSummary(value: unknown): TodoistTaskSummary | null {
+    if (!value || typeof value !== "object") return null;
+    const row = value as Json, id = cleanText(row.id, 200), content = cleanText(row.content, 500);
+    if (!id || !content) return null;
+    const due = row.due && typeof row.due === "object" ? row.due as Json : {};
+    return {
+      id, content, description: cleanText(row.description, 2_000), projectId: cleanText(row.project_id, 200),
+      priority: Math.max(1, Math.min(Number(row.priority) || 1, 4)), due: cleanText(due.datetime || due.date || due.string, 200) || null,
+      completed: row.is_completed === true || row.completed === true,
+      url: cleanText(row.url, 2_000) || `https://app.todoist.com/app/task/${encodeURIComponent(id)}`,
+    };
+  }
+
+  private async request(path: string, options: { method?: "GET" | "POST"; body?: Json; signal?: AbortSignal } = {}, retry = true): Promise<Json> {
+    const version = this.db.connectorAuthorizationVersion("todoist");
+    const configured = this.db.oauthConnectorCredentials<TodoistCredentials>("todoist"), credentials = configured?.credentials;
+    if (!configured || !credentials?.accessToken) throw new Error("Connect Todoist in Apps & Tools first.");
+    if (retry && credentials.expiresAt && new Date(credentials.expiresAt).getTime() <= Date.now() + 60_000 && credentials.refreshToken) await this.refresh(configured.clientId, configured.clientSecret, credentials, version);
+    const current = this.db.oauthConnectorCredentials<TodoistCredentials>("todoist")?.credentials || credentials;
+    const response = await this.fetcher(`https://api.todoist.com${path}`, {
+      method: options.method || "GET", headers: { authorization: `Bearer ${current.accessToken}`, "content-type": "application/json" },
+      signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000),
+      ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+    });
+    if (response.status === 401 && retry && current.refreshToken) { await this.refresh(configured.clientId, configured.clientSecret, current, version); return this.request(path, options, false); }
+    const result = await response.json().catch(() => ({})) as Json;
+    if (response.status === 404) throw new TodoistNotFoundError(path);
+    if (!response.ok) throw new Error(`Todoist could not complete that request (${cleanText(result.error_description || result.error || result.message, 400) || response.status}).`);
+    this.db.markConnectorUsed("todoist");
+    return result;
+  }
+
+  private async refresh(clientId: string, clientSecret: string, credentials: TodoistCredentials, version: number) {
+    if (!credentials.refreshToken) throw new Error("Todoist sign-in expired. Reconnect it in Apps & Tools.");
+    const result = await this.tokenRequest(clientId, clientSecret, { grant_type: "refresh_token", refresh_token: credentials.refreshToken });
+    const accessToken = cleanText(result.access_token, 4_000);
+    if (!accessToken) throw new Error("Todoist could not refresh its sign-in. Reconnect it in Apps & Tools.");
+    this.db.updateOAuthConnectorCredentials("todoist", { accessToken, refreshToken: cleanText(result.refresh_token, 4_000) || credentials.refreshToken, ...(expiresAt(result.expires_in) ? { expiresAt: expiresAt(result.expires_in) } : {}) }, version);
+  }
+
+  private async tokenRequest(clientId: string, clientSecret: string, values: Record<string, string>) {
+    const response = await this.fetcher("https://api.todoist.com/oauth/access_token", {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, ...values }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const result = await response.json().catch(() => ({})) as Json;
+    if (!response.ok) throw new Error(`Todoist sign-in failed (${cleanText(result.error_description || result.error, 300) || response.status}).`);
+    return result;
+  }
+
+  private pruneAttempts() {
+    for (const [state, createdAt] of this.attempts) if (Date.now() - createdAt > 10 * 60_000) this.attempts.delete(state);
+  }
+}

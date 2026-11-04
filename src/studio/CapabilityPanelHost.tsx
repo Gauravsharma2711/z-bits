@@ -1,0 +1,161 @@
+import { KnowsPanel } from "../components/KnowsPanel";
+import { useCallback, useEffect, useState } from "react";
+import { enablePushNotifications } from "./push";
+import type { AppState, Bot, ConnectorStatus, ProviderConnectionTest, ProviderLoginAttempt, ProviderStatus } from "../shared/types";
+import { ProviderPanel } from "../components/ProviderPanel";
+import { ExtensionsPanel } from "../components/ExtensionsPanel";
+import { TeamOverview, UsageOverview, WorkspaceNote } from "./WorkspaceOverview";
+import { ZbitsOverview } from "./ZbitsOverview";
+import { SpendingRulesPanel } from "./SpendingRulesPanel";
+import { Character } from "./Character";
+import { ChoiceMenu } from "./ChoiceMenu";
+import { RunControls } from "./RunControls";
+import { BotPanel, ArtifactsPanel, CodeProjectsPanel, ComputerPanel, ConnectorPanel, ControlPanel, FilesPanel, LiveStudioPanel, RemotePanel, RoutinesPanel, SearchPanel, TeachPanel, WorkReceipt } from "../CapabilityPanels";
+import "./capability-panels.css";
+import "./settings-pages.css";
+import "./refined-workspace.css";
+
+import type { CapabilityPanel } from "./capability-navigation";
+import { TelegramPanel } from "../components/TelegramPanel";
+import { friendlyModelName } from "../shared/provider-config";
+import { ApiError, apiError, createSubmissionKeys } from "./submission-keys";
+async function request<T = unknown>(url: string, method = "GET", body?: unknown): Promise<T> {
+  const response = await fetch(url, { method, headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const result = await response.json();
+  if (!response.ok) throw apiError(response.status, result, "Couldn’t save that change. Please try again.");
+  return result as T;
+}
+// P01c: workflow/skill shortcuts resend on retry taps. One key per unsent
+// content replays instead of duplicating; a conflict rotates the key.
+const workflowKeys = createSubmissionKeys();
+
+/** Functional settings share Studio's dialog, palette and navigation. There is
+ * no second app shell, separate conversation state or hidden legacy route. */
+export function CapabilityPanelHost({ panel, state, threadId, onOpen, onThread, onChange, onCreate, onEditBot }: {
+  onCreate: () => void; onEditBot: (thread: string) => void;
+  panel: CapabilityPanel; state: AppState; threadId: string;
+  onOpen: (panel: CapabilityPanel) => void; onThread: (id: string) => void; onChange: () => void;
+}) {
+  const [provider, setProvider] = useState<ProviderStatus | null>(null);
+  const [connectionTests, setConnectionTests] = useState<Record<string, ProviderConnectionTest>>({});
+  const [connections, setConnections] = useState<ConnectorStatus | null>(null);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const [chosenBot, setChosenBot] = useState(state.bots.find((bot) => bot.threadId === threadId)?.id || state.bots[0]?.id || "");
+  const [reviewRunId, setReviewRunId] = useState<string | null>(null);
+  const bot = state.bots.find((item) => item.id === chosenBot) || state.bots[0];
+  const loadProvider = useCallback(async () => {
+    const status = await request<ProviderStatus>("/api/provider");
+    setProvider(status);
+    return status;
+  }, []);
+  // Test receipts are loaded on open and after each test — not on the 5s
+  // refresh — so merely viewing setup never spends provider allowance.
+  const loadConnectionTests = useCallback(async (status: ProviderStatus) => {
+    const ids = [...new Set([...status.instances.map((entry) => entry.id), ...status.catalog.map((entry) => entry.connectionId).filter((id): id is string => Boolean(id))])];
+    const entries = await Promise.all(ids.map(async (id) => {
+      try {
+        const response = await fetch(`/api/provider/${encodeURIComponent(id)}/test`);
+        if (!response.ok) return null;
+        return [id, await response.json() as ProviderConnectionTest] as const;
+      } catch { return null; }
+    }));
+    const next: Record<string, ProviderConnectionTest> = {};
+    for (const entry of entries) if (entry) next[entry[0]] = entry[1];
+    setConnectionTests(next);
+  }, []);
+  const loadConnections = useCallback(async () => setConnections(await request<ConnectorStatus>("/api/connectors")), []);
+  useEffect(() => {
+    setError(""); setNotice("");
+    if (["provider", "bot"].includes(panel)) void loadProvider().then((status) => {
+      if (panel === "provider") void loadConnectionTests(status).catch(() => {});
+    }).catch((e: Error) => setError(e.message));
+    if (["connectors", "bot"].includes(panel)) void loadConnections().catch((e: Error) => setError(e.message));
+    if (panel !== "provider") return;
+    const timer = setInterval(() => void loadProvider().catch(() => {}), 5000);
+    return () => clearInterval(timer);
+  }, [panel, loadProvider, loadConnections]);
+  async function change<T = unknown>(url: string, method = "POST", body?: unknown, message?: string): Promise<T> {
+    const result = await request<T>(url, method, body); onChange(); if (message) setNotice(message); return result;
+  }
+  /** U04e: safety and teammate settings fail visibly. Switches are
+   * controlled from server state, so a failed save would otherwise snap
+   * back with no message while the protection stays on (or off). */
+  async function setting(action: () => Promise<unknown>): Promise<void> {
+    try { await action(); } catch (error) { setError(error instanceof Error ? error.message : "That setting could not be saved."); }
+  }
+  /** Workflow/skill shortcuts send through /api/messages with a stable
+   * retry key, then navigate. A conflict rotates the key and surfaces the
+   * host message so a retry tap sends fresh instead of 409-looping. */
+  async function workflowMessage(threadId: string, body: string, targetBotIds: string[], expectedWorkKind?: string): Promise<void> {
+    const scope = { threadId, body, targetBotIds, attachmentIds: [] as string[], replyToId: null, expectedWorkKind };
+    try {
+      await change("/api/messages", "POST", { threadId, body, expectedWorkKind, targetBotIds, attachmentIds: [], requestId: workflowKeys.keyFor(scope) });
+      onThread(threadId);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "request_conflict") workflowKeys.rotate();
+      throw error;
+    }
+  }
+  const saveBot = async (id: string, patch: Partial<Bot>) => { await change(`/api/bots/${encodeURIComponent(id)}`, "PATCH", patch); await loadProvider(); };
+  const notifications = async () => { const result = await enablePushNotifications(); setNotice(result.message); return result.ok; };
+  const reviewRun = [...state.runs, ...state.studioRuns].find((run) => run.id === reviewRunId);
+  return <div className={`capabilities capability-${panel}`}>
+    {panel === "overview" && <ZbitsOverview state={state} onOpen={onOpen} onThread={onThread} onEditBot={onEditBot} />}
+    {panel === "spending" && <SpendingRulesPanel onNotice={setNotice} />}
+    {panel === "team" && <TeamOverview state={state} onCreate={() => onCreate()} onEdit={id => onEditBot(id)} onThread={onThread} onImport={async bundle => { await change("/api/bots/import", "POST", bundle, "Profile imported. Choose an AI connection before starting work."); }} onRestore={async id => { await change(`/api/bots/${encodeURIComponent(id)}/restore`, "POST", undefined, "Teammate restored."); }} />}
+    {panel === "usage" && <UsageOverview state={state} onEdit={id => onEditBot(id)} onThread={onThread} />}
+    {error && <section className="panel-error" role="alert"><strong>Couldn’t complete that request.</strong><p>{error}</p><small>Check the current value before retrying. Your conversation stays available.</small><button onClick={() => { onChange(); setError(""); }}>Dismiss and refresh</button></section>}
+    {notice && <p className="capability-notice" role="status">{notice}</p>}
+    {["bot", "files", "computer", "teach"].includes(panel) && state.bots.length > 1 && <div className="capability-owner"><span>Teammate</span><ChoiceMenu label="Teammate" value={bot?.id || ""} choices={state.bots.map((item) => ({ value: item.id, label: item.name, detail: item.role, icon: <Character name={item.name} color={item.color} variant={item.mascot} size={28} /> }))} onChange={setChosenBot} /></div>}
+    {["bot", "files", "computer", "teach"].includes(panel) && !bot && <p>Create a teammate first to use this feature.</p>}
+    {panel === "control" && <><WorkspaceNote bot={bot} title="Before important actions">Ask First stays visible. Accounts, recipients, resources and versions belong in the review. Access to a browser is not permission for every website.</WorkspaceNote><div className="workspace-row-group">{state.bots.map(item => <button className="workspace-list-row" key={item.id} onClick={() => onEditBot(item.threadId)}><Character name={item.name} color={item.color} variant={item.mascot} size={36}/><span><strong>{item.name}</strong><small>Browser {item.browserEnabled ? "allowed" : "off"} · private computer {item.computerEnabled ? "allowed" : "off"} · Mac access {item.macAccessEnabled && state.settings.macAccessEnabled ? "enabled" : "off"}</small></span><span className="workspace-row-action">Review access</span></button>)}</div></>}
+    {panel === "provider" && <ProviderPanel provider={provider} bots={state.bots} mascot={(item) => <Character name={item.name} color={item.color} variant={item.mascot} size={36} />} modelLabel={friendlyModelName} onUpdateBot={saveBot}
+      connectionTests={connectionTests}
+      onTestConnection={async (id) => {
+        const receipt = await change<ProviderConnectionTest>(`/api/provider/${encodeURIComponent(id)}/test`, "POST", {});
+        setConnectionTests((previous) => ({ ...previous, [id]: receipt }));
+        return receipt;
+      }}
+      onChooseInitial={async (providerInstanceId, model) => { await change("/api/provider/choose", "POST", { providerInstanceId, model }, "Your AI choice is saved."); await loadProvider(); }}
+      onAdd={async (input) => { await change("/api/providers", "POST", input); await loadProvider(); }}
+      onDelete={async (id) => { await change(`/api/providers/${encodeURIComponent(id)}`, "DELETE", undefined, "Connection removed."); setConnectionTests((previous) => { const next = { ...previous }; delete next[id]; return next; }); await loadProvider(); }}
+      onConnect={(providerId) => request<ProviderLoginAttempt>("/api/provider/connect", "POST", { providerId })}
+      onFinish={async (id, code) => { await request(`/api/provider/connect/${encodeURIComponent(id)}/callback`, "POST", { code }); await loadProvider(); }} />}
+    {panel === "connectors" && <ConnectorPanel status={connections} bots={state.bots} onRefresh={loadConnections} onNotice={setNotice} onOpenThread={onThread} onCreateTeammate={onCreate} onReviewTeammate={onEditBot} onStartWorkflow={async (prompt, expectedWorkKind, botId) => {
+      await workflowMessage("team-room", prompt, botId ? [botId] : [], expectedWorkKind);
+    }} />}
+    {panel === "projects" && <CodeProjectsPanel bots={state.bots} onNotice={setNotice} />}
+    {panel === "telegram" && <TelegramPanel bots={state.bots} />}
+    {panel === "knows" && <KnowsPanel />}
+    {panel === "remote" && <RemotePanel bots={state.bots} runner={state.runner} installPrompt={null} onInstalled={() => {}} onNotice={setNotice} />}
+    {panel === "bot" && bot && <BotPanel key={bot.id} bot={bot} thread={state.threads.find((item) => item.id === bot.threadId)!} provider={provider} apps={connections?.access} autopilotForEveryone={state.settings.yoloMode} onSave={saveBot}
+      onUpdateThread={async (patch) => { await change(`/api/threads/${encodeURIComponent(bot.threadId)}`, "PATCH", patch); }}
+      onDuplicate={async () => { const copy = await change<Bot>(`/api/bots/${encodeURIComponent(bot.id)}/duplicate`); onThread(copy.threadId); }} onOpenTeach={() => onOpen("teach")}
+      onRetire={async () => { const result = await change<{ stopped: number }>(`/api/bots/${encodeURIComponent(bot.id)}/retire`, "POST"); setNotice(result.stopped ? `${bot.name} retired. ${result.stopped} active task${result.stopped === 1 ? " was" : "s were"} stopped; history is preserved.` : `${bot.name} retired. History is preserved.`); onThread("team-room"); }} />}
+    {panel === "files" && bot && <FilesPanel key={bot.id} bot={bot} />}
+    {panel === "artifacts" && <ArtifactsPanel onOpenThread={onThread} />}
+    {panel === "computer" && bot && <ComputerPanel key={bot.id} bot={bot} onTeach={() => onOpen("teach")} />}
+    {panel === "teach" && <><p className="capability-notice">Teach through conversation: ask your teammate to “learn this workflow”, or type /learn followed by what you want to reuse. You review the instructions before they are saved.</p><ExtensionsPanel bots={state.bots} initialTab="memory" selectedBotId={bot?.id} />{bot && <details className="capability-disclosure"><summary>Your learned workflows</summary><TeachPanel key={bot.id} bot={bot} bots={state.bots} hideOwnerSwitcher onBotChange={setChosenBot} onNotice={setNotice} onUse={async (workflow) => {
+      const owner = state.bots.find((item) => item.id === workflow.botId) || bot;
+      await workflowMessage(owner.threadId, `/${workflow.skillSlug}`, [owner.id]);
+    }} /></details>}</>}
+    {panel === "control" && <ControlPanel state={state} onNotify={() => void notifications().catch((e: Error) => setError(e.message))} onOpenProvider={() => onOpen("provider")} onOpenRemote={() => onOpen("remote")} onOpenConnectors={() => onOpen("connectors")} onOpenProjects={() => onOpen("projects")} onOpenSkills={() => onOpen("teach")} onSetMacAccess={(enabled) => setting(() => change("/api/settings", "PATCH", { macAccessEnabled: enabled }))} onSetSelfExtend={(enabled) => setting(() => change("/api/settings", "PATCH", { selfExtendEnabled: enabled }))} onSetCodingModel={(model) => setting(() => change("/api/settings", "PATCH", { codingModel: model }))} onSetEmbeddings={(providerInstanceId, model) => setting(() => change("/api/settings", "PATCH", { embeddingsProviderInstanceId: providerInstanceId, embeddingsModel: model }))} onRecallDelegation={(runId) => setting(() => change(`/api/delegations/${encodeURIComponent(runId)}/recall`, "POST"))} onSetMaxTeammates={(max) => setting(() => change("/api/settings", "PATCH", { maxTeammates: max }))} onRestoreTeammate={(id) => setting(() => change(`/api/bots/${encodeURIComponent(id)}/restore`, "POST", undefined, "Teammate restored."))} onSetYoloMode={(enabled) => setting(() => change("/api/settings", "PATCH", { yoloMode: enabled }))} onImportTeammate={async (bundle) => await change<{ name: string; skills: number; routines: number } & { bot: Bot }>("/api/bots/import", "POST", bundle).then((result) => ({ name: result.bot.name, skills: result.skills, routines: result.routines }))} />}
+    {panel === "routines" && <RoutinesPanel routines={state.routines} events={state.automationEvents} alerts={state.automationAlerts} runner={state.runner} bots={state.bots} onRefresh={onChange}
+      onCreate={(input) => change("/api/routines", "POST", input, "Automation created.")}
+      onUpdate={(routine, input) => change(`/api/routines/${routine.id}`, "PATCH", { ...input, expectedRevision: routine.revision }, "Automation updated.")}
+      onToggle={async (routine) => { try { await change(`/api/routines/${routine.id}`, "PATCH", { enabled: !routine.enabled, expectedRevision: routine.revision }); } catch (error) { if (error instanceof ApiError && error.code === "routine_conflict") onChange(); setError(error instanceof Error ? error.message : "That change could not be saved."); } }}
+      onDelete={async (routine) => { try { await change(`/api/routines/${routine.id}`, "DELETE", undefined, "Automation removed. Past results were kept."); } catch (error) { setError(error instanceof Error ? error.message : "That automation could not be removed."); } }}
+      onRun={async (routine) => { await change(`/api/routines/${routine.id}/run`, "POST", { confirmed: true }, routine.triggerType === "webpage" ? "Page checked." : "Test run started."); }}
+      onReplay={async (event) => { await change(`/api/automation-events/${event.id}/replay`); }}
+      onRotateSecret={(routine) => change(`/api/routines/${routine.id}/rotate-secret`)}
+      onResolveAlert={async (alert) => { await change(`/api/automation-alerts/${alert.id}/resolve`); }} onOpenResult={(routine) => onThread(routine.threadId)}
+      onProtectRunner={async () => { await change("/api/runner/background"); }} onUnprotectRunner={async () => { await change("/api/runner/background", "DELETE"); }}
+      onWakeRunner={async () => { await change("/api/runner/wake"); }} onEnableNotifications={notifications} />}
+    {panel === "live" && <><LiveStudioPanel state={state} onOpenThread={onThread} onReview={setReviewRunId} onCancel={async (id) => { await change(`/api/runs/${id}/cancel`); }}
+      onResolveAction={async (id, outcome) => { await change(`/api/approved-actions/${id}/resolve`, "POST", { outcome }); }}
+      onUpdateThread={async (id, patch) => { await change(`/api/threads/${encodeURIComponent(id)}`, "PATCH", patch); }} onOpenControl={() => onOpen("control")} onNotice={setNotice} />
+      {reviewRun && <section className="capability-review"><h3>Review request</h3><RunControls run={reviewRun} approval={state.approvals.find((item) => item.runId === reviewRun.id)} onChange={onChange} /><WorkReceipt runId={reviewRun.id} /></section>}</>}
+    {panel === "search" && <SearchPanel initialQuery="" onOpenResult={(result) => onThread(result.threadId)} />}
+  </div>;
+}

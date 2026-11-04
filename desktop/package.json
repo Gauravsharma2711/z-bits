@@ -1,0 +1,84 @@
+{
+  "name": "sidemates-desktop",
+  "productName": "Sidemates",
+  "version": "0.42.0",
+  "description": "Sidemates desktop shell \u2014 your AI team, on the computer you own.",
+  "author": {
+    "name": "Robert Prisacariu",
+    "email": "145539911+PrisacariuRobert@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/PrisacariuRobert/sidemates",
+  "license": "MIT",
+  "private": true,
+  "main": "main.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "44.4.4",
+    "electron-builder": "^26.17.0"
+  },
+  "build": {
+    "appId": "app.sidemates.desktop",
+    "productName": "Sidemates",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.mjs",
+      "navigation.mjs",
+      "studio-identity.mjs",
+      "build/icon.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime/openbot",
+        "to": "openbot"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis"
+        }
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "AppImage"
+        },
+        {
+          "target": "deb"
+        }
+      ],
+      "category": "Utility"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "dmg"
+        },
+        {
+          "target": "zip"
+        }
+      ],
+      "identity": "-",
+      "hardenedRuntime": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "artifactName": "Sidemates-${version}-${os}-${arch}.${ext}"
+  },
+  "allowScripts": {
+    "electron@44.4.4": true
+  }
+}

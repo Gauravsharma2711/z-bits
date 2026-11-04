@@ -1,0 +1,171 @@
+/* A finished result: files as tappable file cards with a type tile, name,
+ * and size — like attachments in a real conversation app — then a single
+ * whisper of provenance. */
+.delivery-result { display: grid; gap: 8px; margin-top: 12px; }
+.file-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: fit-content;
+  max-width: 100%;
+  min-width: min(220px, 100%);
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--system-background);
+  color: var(--ink);
+  text-decoration: none;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    transform 140ms ease;
+}
+a.file-card:hover {
+  border-color: var(--separator-strong);
+}
+a.file-card:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+a.file-card:active {
+  transform: scale(0.99);
+}
+.file-card-thumb {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  object-fit: cover;
+  background: var(--surface-muted);
+}
+.file-card-meta { flex: 1; min-width: 0; display: grid; gap: 1px; }
+.file-card-meta strong { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-card-meta small { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+/* Quiet trailing affordances: a plain glyph, never a button-looking circle. */
+.file-card-chevron {
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--muted);
+}
+.file-card-open {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--muted);
+}
+.delivery-version + .delivery-version { border-top: 0; }
+/* Inside the delivered-file card the file row drops its own chrome — the
+ * container is already the card. */
+.delivered-file .file-card { border: 0; border-radius: 0; background: transparent; padding: 12px; width: auto; min-width: 0; }
+.delivered-file .file-card:hover { background: var(--secondary-system-background); }
+.delivery-newer { margin: 8px 4px 0; font-size: 12px; line-height: 1.5; color: var(--secondary); }
+.delivery-newer a { display: inline-flex; align-items: center; gap: 4px; min-height: 40px; padding: 4px 8px; border-radius: 8px; color: var(--ink); font-weight: 500; text-underline-offset: 3px; }
+.delivery-newer a:hover { background: var(--surface-muted); }
+.delivery-newer a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 4px; }
+.delivery-newer a:active:not(:disabled) { filter: brightness(.96); }
+.delivery-prov { margin: 8px 4px 0; font-size: 12px; color: var(--muted); }
+.delivery-finding { min-width: 0; margin: 16px 4px 0; padding-inline-start: 12px; border-inline-start: 2px solid var(--line); color: var(--ink); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.delivery-finding > strong { font-size: 14px; font-weight: 600; }
+.delivery-finding p { margin: 4px 0 0; }
+.delivery-finding summary { width: fit-content; min-height: 40px; display: inline-flex; align-items: center; gap: 8px; padding-block: 8px; cursor: pointer; color: var(--secondary); }
+.delivery-finding details p { color: var(--secondary); }
+.delivery-finding-full { overflow-wrap: anywhere; }
+.delivery-finding-full > * + * { margin-top: 8px; }
+.delivery-finding-full code { white-space: pre-wrap; }
+.delivery-receipt { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 12px; font-size: 12px; color: var(--secondary); }
+/* Owner-tapped review: one quiet action under the result, same tokens. */
+.delivery-review-cta { display: inline-flex; align-items: center; gap: 8px; margin-top: 12px; min-height: 40px; padding: 8px 12px; border-radius: 999px; }
+.delivery-review-cta:hover:not(:disabled) { background: var(--surface-muted); }
+.delivery-review-cta:active:not(:disabled) { filter: brightness(.96); }
+.delivery-review-cta:disabled { opacity: .5; cursor: default; }
+.delivery-review { display: grid; gap: 8px; margin-top: 12px; font-size: 12px; color: var(--secondary); }
+.delivery-review label { display: grid; gap: 8px; min-width: 0; }
+.delivery-review select { max-width: 100%; min-width: 0; width: 100%; min-height: 44px; overflow: hidden; text-overflow: ellipsis; }
+.delivery-review-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.delivery-review-note { margin-top: 12px; font-size: 12px; }
+.delivery-receipt summary { display: flex; align-items: center; gap: 8px; cursor: pointer; min-height: 40px; }
+.delivery-receipt summary::after { content: "+"; margin-left: auto; }
+.delivery-receipt[open] summary::after { content: "−"; }
+.delivery-receipt ul { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 12px; }
+.delivery-receipt li { display: flex; align-items: flex-start; gap: 8px; }
+.delivery-receipt li svg { flex-shrink: 0; align-self: flex-start; margin-top: 2px; }
+.delivery-receipt strong { font-weight: 500; color: var(--ink); }
+.delivery-receipt small { display: block; line-height: 1.5; overflow-wrap: anywhere; }
+.delivered-file { width: fit-content; max-width: min(100%, 480px); min-width: min(240px, 100%); margin-top: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+/* Attachment cards own their foreground/background tokens independent of the
+ * enclosing incoming/outgoing chat bubble, so names, row summaries and preview
+ * controls stay readable in light and dark themes at desktop and 390px.
+ * S3-P02 / S4-U02 / S5-UX01. */
+.delivered-file,
+.delivered-file .message-file,
+.delivered-file .message-file strong,
+.delivered-file strong,
+.delivered-file > p,
+.delivered-file summary { color: var(--ink); }
+.delivered-file small,
+.delivered-file .message-file small { color: var(--secondary); }
+/* The owner bubble sets --on-strong on .prose and strong; beat it explicitly
+ * so the card's own ink/surface pairing always wins. */
+.from-you .prose .delivered-file,
+.from-you .prose .delivered-file strong,
+.from-you .prose .delivered-file .message-file,
+.from-you .prose .delivered-file .message-file strong,
+.from-you .prose .delivered-file > p,
+.from-you .prose .delivered-file summary { color: var(--ink); }
+.from-you .prose .delivered-file small,
+.from-you .prose .delivered-file .message-file small { color: var(--secondary); }
+.delivered-file > a > img { display: block; width: 100%; max-height: 300px; object-fit: contain; }
+.delivered-file .message-file { display: flex; width: 100%; gap: 12px; align-items: center; border: 0; margin: 0; padding: 16px; border-radius: 0; }
+.delivered-file .message-file span { flex: 1; min-width: 0; }
+.delivered-file strong { font-weight: 500; overflow-wrap: anywhere; }
+.delivered-file small { display: block; color: var(--secondary); font-size: 12px; line-height: 1.5; }
+.delivered-file > small, .delivered-file > p { margin: 0; padding: 0 16px 16px; font-size: 12px; }
+.delivered-file details { padding: 12px 16px; border-top: 1px solid var(--line); }
+.delivered-file summary { font-size: 12px; cursor: pointer; min-height: 40px; display: inline-flex; align-items: center; gap: 8px; }
+.delivered-file pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+
+/* Result first. Supporting evidence is one labelled disclosure, not another answer. */
+.delivery-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; }
+.delivery-summary > details { margin: 0; padding: 0; border: 0; font-size: 12px; color: var(--secondary); max-width: 100%; }
+.delivery-summary > details > summary { display: flex; align-items: center; gap: 8px; width: fit-content; min-height: 40px; padding: 8px 10px; box-sizing: border-box; border: 0; border-radius: 9px; cursor: pointer; list-style: none; color: var(--muted); font-size: 12px; }
+.delivery-summary > details > summary:hover { color: var(--ink); text-decoration: none; }
+.delivery-summary summary::-webkit-details-marker { display: none; }
+.delivery-summary > details > summary::after { content: none; }
+.delivery-summary > details[open] { flex-basis: 100%; }
+.delivery-summary > details[open] > summary { color: var(--ink); }
+.delivery-summary > details > summary:hover { background: color-mix(in srgb, var(--surface-muted) 65%, transparent); }
+.delivery-summary > details > summary:active:not(:disabled) { filter: brightness(.96); }
+.delivery-summary > details > summary:focus-visible, .delivery-review-cta:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.delivery-summary .delivery-review-cta { min-height: 40px; padding: 8px 12px; margin: 0; font-size: 12px; }
+.delivery-summary .delivery-finding { margin: 12px 0; }
+.delivery-summary .delivery-review { flex-basis: 100%; }
+@media (pointer: coarse) { .delivery-summary > details > summary, .delivery-summary .delivery-review-cta { min-height: 44px; } }
+@media (prefers-reduced-motion: reduce) {
+  .file-card { transition: none; }
+  a.file-card:active { transform: none; }
+}
+
+/* Returned work, Figma 69:38: real attachment content and revision identity. */
+.delivered-file.delivered-paper { width: min(578px, 100%); max-width: 100%; margin: 12px 0 16px; border: 0; background: transparent; overflow: visible; }
+.document-paper { position: relative; isolation: isolate; display: flex; flex-direction: column; min-height: 248px; padding: 20px 22px 18px; border: .7px solid var(--line); border-radius: 14px; background: linear-gradient(color-mix(in srgb, var(--mascot-color, var(--secondary)) 4%, var(--system-background)), var(--system-background)); box-shadow: 0 1px 3px #2b26330a, 0 8px 26px #38212e14; text-decoration: none; color: var(--ink); }
+.document-paper::before { content: ""; position: absolute; z-index: -2; inset: 8px 3px -7px; border-radius: 14px; background: color-mix(in srgb, var(--mascot-color, var(--secondary)) 18%, var(--system-background)); transform: rotate(1.4deg); border: .5px solid var(--line); }
+.document-paper::after { content: ""; position: absolute; z-index: -1; inset: 0; border-radius: inherit; background: linear-gradient(color-mix(in srgb, var(--mascot-color, var(--secondary)) 4%, var(--system-background)), var(--system-background)); }
+.document-identity { display: flex; align-items: center; gap: 7px; min-height: 22px; font-size: 11px; color: var(--secondary); }
+.document-identity > span { overflow-wrap: anywhere; }
+.document-identity small { margin-left: auto; white-space: nowrap; color: var(--muted); font-size: 10px; }
+.delivered-paper .document-title { display: block; font-size: 30px; font-weight: 600; letter-spacing: -.8px; line-height: 38px; overflow-wrap: anywhere; }
+.document-excerpt { white-space: pre-line; font-size: 13px; line-height: 21px; padding-top: 10px; min-height: 72px; color: var(--secondary); }
+.document-actions { display: flex; align-items: center; gap: 7px; border-top: 1px solid var(--line); min-height: 52px; margin-top: auto; font-size: 12px; }
+.document-actions small { margin-left: auto; font-size: 11px; color: var(--muted); }
+.document-author { position: absolute; right: 2px; top: -36px; transform: rotate(-8deg); }
+.document-preview-image { width: 100%; max-height: 180px; object-fit: contain; }
+.delivery-result:has(.delivered-paper) { width: min(584px, 100%); }
+@media(max-width:760px) { .document-paper { padding: 16px; } .delivered-paper .document-title { font-size: 23px; line-height: 30px; } .document-identity { flex-wrap: wrap; } }
+
+.delivery-reviews > summary { display: flex; align-items: center; gap: 9px; max-width: 452px; min-height: 46px; cursor: pointer; list-style: none; font-size: 12px; }
+.delivery-reviews > summary small { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; }
+.delivery-reviews > summary strong { font-weight: 500; }
+.review-faces { display: flex; align-items: center; flex-shrink: 0; }
+.delivery-reviews > summary > svg { margin-left: auto; flex-shrink: 0; }

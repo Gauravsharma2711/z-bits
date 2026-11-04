@@ -1,0 +1,54 @@
+import { z } from 'zod';
+
+export const browserControlReviewSchema = z.object({
+  url: z.string().max(2048).url().refine(value => { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password; }),
+  label: z.string().trim().min(1).max(240),
+  control: z.string().min(1).max(80),
+  /** Host-observed effective action destination (form action with
+   * submitter overrides, anchor href, else document URL). Approvals for
+   * consequential clicks must carry the reviewed destination; the executor
+   * requires equality with the live destination and fails closed when it
+   * is missing. Optional so older approvals parse — they then refuse at
+   * the destination gate instead of authorizing a new destination. */
+  destination: z.string().max(2048).url().refine(value => { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password; }).optional(),
+  fields: z.array(z.object({ label: z.string().min(1).max(200), value: z.string().max(2000) }).strict()).max(24),
+  /** Bounds which visible fields the host included. Navigation intentionally
+   * excludes unrelated page editors; the approval copy states that limit. */
+  contextScope: z.enum(["form", "dialog", "navigation", "page"]).optional(),
+  /** Page-authored presentation metadata only. It never makes a click safe or
+   * bypasses the exact-control approval and fingerprint checks. */
+  disclosure: z.object({
+    expanded: z.literal(false),
+    controls: z.array(z.string().trim().min(1).max(200)).min(1).max(3),
+  }).strict().nullable().optional(),
+  complete: z.literal(true),
+}).strict();
+export type BrowserControlReview = z.infer<typeof browserControlReviewSchema>;
+export const browserNavigationAllowanceOfferSchema = z.object({
+  version: z.literal(1),
+  origin: z.string().max(2048).url().refine(value => {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && url.origin === value;
+  }),
+  maxClicks: z.literal(12),
+  expiresInMinutes: z.literal(15),
+}).strict();
+export type BrowserNavigationAllowanceOffer = z.infer<typeof browserNavigationAllowanceOfferSchema>;
+export const browserControlApprovalSchema = z.object({
+  selector: z.string().min(1).max(2000),
+  value: z.string().max(10000).optional(),
+  targetFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  targetReview: browserControlReviewSchema,
+  /** Host-authored offer shown beside an exact click approval. Its presence
+   * never grants access; only the owner's separate decision flag can do so. */
+  navigationAllowanceOffer: browserNavigationAllowanceOfferSchema.optional(),
+  // Host-only binding for the feature-flagged semantic path. These fields
+  // are created after resolving an opaque observed target, never accepted as
+  // model input. They let the approved effect rebind to an equivalent fresh
+  // observation after the original 15-second target expires.
+  semanticBound: z.literal(true).optional(),
+  semanticSessionId: z.string().min(1).max(160).optional(),
+  semanticRole: z.string().min(1).max(80).optional(),
+  semanticLabel: z.string().min(1).max(240).optional(),
+  semanticReviewDigest: z.string().min(1).max(128).optional(),
+}).strict().refine((value) => !value.semanticBound || Boolean(value.semanticSessionId && value.semanticRole && value.semanticLabel && value.semanticReviewDigest), "A semantic browser review needs its complete host binding.");

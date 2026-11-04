@@ -1,0 +1,127 @@
+import type { Express, Request, Response, NextFunction } from "express";
+import { z } from "zod";
+import QRCode from "qrcode";
+import { DevicePairing, newBrowserDeviceKey, pairingLink, webPairingLink } from "./device-pairing.js";
+import { AwayAccess } from "./away-access.js";
+import { LoginAttemptGate, trustedLocalRequest } from "./auth-security.js";
+import { shareShortcutPlist, shortcutPlist, signedShortcut } from "./siri-shortcut.js";
+
+export function registerPairingRoutes(app: Express, devices: DevicePairing, away: AwayAccess, revokeStreams: (id: string) => void, sessionCookie: (req: Request, value: string) => string) {
+  const gate = new LoginAttemptGate(30, 60_000);
+  const localOnly = (req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    if (!trustedLocalRequest(req)) return res.status(403).json({ error: "Manage phone connections from Sidemates on this host." });
+    next();
+  };
+  app.get("/api/auth/pairing-probe", (_req, res) => { res.setHeader("Cache-Control", "no-store"); res.json({ studio: away.probeIdentity }); });
+  // Deliberately not exempt from authentication. Readiness checks must get 401.
+  app.get("/api/auth/pairing-guard", (_req, res) => res.sendStatus(204));
+  app.post("/api/auth/pair", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const peer = req.socket.remoteAddress || "unknown";
+    const allowed = gate.check(peer);
+    if (!allowed.allowed) { res.setHeader("Retry-After", String(allowed.retryAfterSeconds)); return res.status(429).json({ error: "Wait a moment before scanning again." }); }
+    const parsed = z.object({ ticket: z.string().length(43), deviceKey: z.string().length(47), name: z.string().max(100) }).strict().safeParse(req.body);
+    const result = parsed.success ? devices.redeem(parsed.data.ticket, parsed.data.deviceKey, parsed.data.name) : null;
+    if (!result) { gate.failed(peer); return res.status(401).json({ error: "This QR code has expired or was already used. Show a new code on your Mac." }); }
+    gate.succeeded(peer);
+    res.json({ ok: true, ...result });
+  });
+  // The phone's camera opens the studio in its browser; the page posts the
+  // ticket from the link's fragment and receives a device session cookie.
+  app.post("/api/auth/pair-browser", (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const peer = req.socket.remoteAddress || "unknown";
+    const allowed = gate.check(peer);
+    if (!allowed.allowed) { res.setHeader("Retry-After", String(allowed.retryAfterSeconds)); return res.status(429).json({ error: "Wait a moment before scanning again." }); }
+    const parsed = z.object({ ticket: z.string().length(43), name: z.string().max(100) }).strict().safeParse(req.body);
+    const key = newBrowserDeviceKey();
+    const result = parsed.success ? devices.redeem(parsed.data.ticket, key, parsed.data.name) : null;
+    if (!result) { gate.failed(peer); return res.status(401).json({ error: "This code has expired or was already used." }); }
+    gate.succeeded(peer);
+    res.setHeader("Set-Cookie", sessionCookie(req, key));
+    res.json({ ok: true });
+  });
+  app.get("/api/access/away", localOnly, async (_req, res) => { res.json({ ...await away.status(), devices: devices.list() }); });
+  app.post("/api/access/pairing", localOnly, async (_req, res) => {
+    const state = await away.status();
+    if (!state.ready || !state.url) return res.status(409).json({ error: state.detail });
+    const invitation = devices.invite();
+    // A shared relay never accepts cookies, so only the app can pair there;
+    // the studio's own address pairs straight from the phone's camera.
+    const browser = !/\/s\/[a-f0-9]{24}\/?$/.test(state.url);
+    const appLink = pairingLink(state.url, invitation.ticket);
+    const link = browser ? webPairingLink(state.url, invitation.ticket) : appLink;
+    const qr = await QRCode.toDataURL(link, { errorCorrectionLevel: "M", margin: 4, width: 320 });
+    res.json({ link, appLink, browser, qr, expiresAt: invitation.expiresAt });
+  });
+  app.delete("/api/access/pairing", localOnly, (_req, res) => { devices.cancel(); res.json({ ok: true }); });
+  // "Hey Siri, Ask Sidemates": a one-time link the iPhone opens to import a
+  // signed Shortcut carrying its own device key (listed as "Siri", revocable).
+  app.post("/api/access/siri", localOnly, async (req, res) => {
+    const kind = req.body?.kind === "share" ? "share" : "ask";
+    const state = await away.status();
+    if (!state.ready || !state.url) return res.status(409).json({ error: state.detail || "Turn on Away access first so your iPhone can reach this Mac." });
+    const invitation = devices.invite();
+    const link = `${state.url.replace(/\/$/, "")}/api/auth/siri-shortcut?ticket=${encodeURIComponent(invitation.ticket)}${kind === "share" ? "&kind=share" : ""}`;
+    res.json({ link, qr: await QRCode.toDataURL(link, { errorCorrectionLevel: "M", margin: 4, width: 320 }), expiresAt: invitation.expiresAt });
+  });
+  app.get("/api/auth/siri-shortcut", async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const peer = req.socket.remoteAddress || "unknown";
+    const allowed = gate.check(peer);
+    if (!allowed.allowed) return res.status(429).send("Wait a moment and try again.");
+    const ticket = typeof req.query.ticket === "string" ? req.query.ticket : "";
+    const state = await away.status();
+    if (!state.url) return res.status(409).send("Away access is off on the Mac.");
+    const key = newBrowserDeviceKey();
+    const share = req.query.kind === "share";
+    const result = ticket.length === 43 ? devices.redeem(ticket, key, share ? "Share sheet" : "Siri") : null;
+    if (!result) { gate.failed(peer); return res.status(401).send("This link has expired or was already used. Make a new one on your Mac."); }
+    gate.succeeded(peer);
+    try {
+      const askUrl = `${state.url.replace(/\/$/, "")}/api/ask`, name = share ? "Send to Sidemates" : "Ask Sidemates";
+      const file = await signedShortcut(share ? shareShortcutPlist({ askUrl, deviceKey: key }) : shortcutPlist({ askUrl, deviceKey: key }), name);
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Content-Disposition", `attachment; filename="${name}.shortcut"`);
+      res.send(file);
+    } catch (error) {
+      devices.revoke(result.deviceId);
+      res.status(500).send(error instanceof Error ? `The shortcut couldn't be made: ${error.message}` : "The shortcut couldn't be made.");
+    }
+  });
+  // The same shortcuts for this Mac: Spotlight, Siri on the Mac, the menu
+  // bar, the Share menu, and any keyboard shortcut the owner gives them. They
+  // talk to this Mac's own address, so no internet connection is needed.
+  app.post("/api/access/mac-shortcut", localOnly, async (req, res) => {
+    if (process.platform !== "darwin") return res.status(409).json({ error: "This only works on a Mac." });
+    const share = req.body?.kind === "share";
+    const port = Number(process.env.OPENBOT_PORT || new URL(`http://${req.headers.host || "127.0.0.1:4310"}`).port || 4310);
+    const askUrl = `http://127.0.0.1:${port}/api/ask`, name = share ? "Send to Sidemates" : "Ask Sidemates";
+    const key = newBrowserDeviceKey(), invitation = devices.invite();
+    const result = devices.redeem(invitation.ticket, key, share ? "Mac Share menu" : "Mac shortcut");
+    if (!result) return res.status(500).json({ error: "The shortcut couldn't be made." });
+    try {
+      const file = await signedShortcut(share ? shareShortcutPlist({ askUrl, deviceKey: key, source: "share-mac" }) : shortcutPlist({ askUrl, deviceKey: key }), name);
+      const { mkdtempSync, writeFileSync } = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const path = await import("node:path");
+      const target = path.join(mkdtempSync(path.join(tmpdir(), "openbot-shortcut-")), `${name}.shortcut`);
+      writeFileSync(target, file, { mode: 0o600 });
+      // Shortcuts opens its own "Add Shortcut" sheet; the owner confirms there.
+      const { execFile } = await import("node:child_process");
+      execFile("/usr/bin/open", [target], () => {});
+      res.json({ ok: true, name });
+    } catch (error) {
+      devices.revoke(result.deviceId);
+      res.status(500).json({ error: error instanceof Error ? `The shortcut couldn't be made: ${error.message}` : "The shortcut couldn't be made." });
+    }
+  });
+  app.delete("/api/access/devices/:id", localOnly, (req, res) => {
+    const id = String(req.params.id);
+    const revoked = devices.revoke(id);
+    if (revoked) revokeStreams(id);
+    res.status(revoked ? 200 : 404).json(revoked ? { ok: true } : { error: "That phone is already disconnected." });
+  });
+}
