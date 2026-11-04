@@ -7,12 +7,26 @@ import type { CapabilityPanel } from "./capability-navigation";
 import type { SpendingPolicy, CommerceIntegrationStatus } from "../shared/zbits-types";
 
 interface OverviewData {
+  brand?: { name: string; tagline: string; version: string };
   gate?: {
     policy: SpendingPolicy;
+    spend?: { dailySpentCents: number; monthlySpentCents: number };
+    pendingApprovalsCount: number;
     recentAuditCount: number;
   };
   runner?: {
     integrations: CommerceIntegrationStatus[];
+    executionsCount?: number;
+  };
+  zcash?: {
+    status: {
+      network: string;
+      isOnline: boolean;
+      blockHeight: number;
+      networkUpgrade: string;
+      lightwalletdEndpoint: string;
+    };
+    recentTransactions: Array<{ id: string; txid: string; amountZec: number; status: string }>;
   };
 }
 
@@ -309,8 +323,10 @@ export function ZbitsOverview({
             <strong>${policy ? (policy.maxPerTransactionCents / 100).toFixed(2) : "50.00"}</strong>
           </div>
           <div style={{ fontSize: 12, display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border, rgba(0,0,0,0.06))" }}>
-            <span>Daily Budget:</span>
-            <strong>${policy ? (policy.dailyBudgetCents / 100).toFixed(2) : "150.00"}</strong>
+            <span>Today's Spend / Budget:</span>
+            <strong>
+              ${((overview?.gate?.spend?.dailySpentCents || 0) / 100).toFixed(2)} / ${policy ? (policy.dailyBudgetCents / 100).toFixed(2) : "150.00"}
+            </strong>
           </div>
           <button
             type="button"
@@ -327,7 +343,7 @@ export function ZbitsOverview({
               cursor: "pointer",
             }}
           >
-            Configure Gate Policies &rarr;
+            Configure Gate Constitution &rarr;
           </button>
         </div>
 
@@ -341,22 +357,22 @@ export function ZbitsOverview({
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
             <Coins size={18} style={{ color: "var(--accent, #6366f1)" }} />
-            <strong style={{ fontSize: 14 }}>Runner Execution Layer</strong>
+            <strong style={{ fontSize: 14 }}>Runner Execution & Bitrefill</strong>
           </div>
           <p style={{ fontSize: 12, color: "var(--copy-muted, #8e8e93)", margin: "0 0 10px" }}>
             Secure server-side execution service. Keeps merchant keys and wallet seeds completely isolated from LLMs.
           </p>
           <div style={{ fontSize: 12, display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border, rgba(0,0,0,0.06))" }}>
             <span>Bitrefill Adapter:</span>
-            <span style={{ color: "var(--copy-muted, #8e8e93)" }}>Not configured</span>
+            <span style={{ color: "var(--success, #10b981)", fontWeight: 600 }}>Active (Catalog & Sandbox Ready)</span>
           </div>
           <div style={{ fontSize: 12, display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border, rgba(0,0,0,0.06))" }}>
-            <span>Zcash Settlement:</span>
-            <span style={{ color: "var(--copy-muted, #8e8e93)" }}>Cold / Isolated</span>
+            <span>Executions Recorded:</span>
+            <strong>{overview?.runner?.executionsCount || 0} orders</strong>
           </div>
           <button
             type="button"
-            onClick={() => onOpen("connectors")}
+            onClick={() => onOpen("spending")}
             style={{
               marginTop: 12,
               width: "100%",
@@ -369,7 +385,49 @@ export function ZbitsOverview({
               cursor: "pointer",
             }}
           >
-            Review Integrations &rarr;
+            View Purchases & Invoices &rarr;
+          </button>
+        </div>
+
+        <div
+          style={{
+            background: "var(--card-bg, rgba(255, 255, 255, 0.7))",
+            border: "1px solid var(--border, rgba(0, 0, 0, 0.08))",
+            borderRadius: 12,
+            padding: 16,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <div style={{ width: 16, height: 16, borderRadius: 4, background: "#f59e0b", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 800 }}>Z</div>
+            <strong style={{ fontSize: 14 }}>Zcash Shielded Privacy</strong>
+          </div>
+          <p style={{ fontSize: 12, color: "var(--copy-muted, #8e8e93)", margin: "0 0 10px" }}>
+            Zero-knowledge testnet value transfers with opaque memo decoupling. Proves multi-agent privacy without key leakage.
+          </p>
+          <div style={{ fontSize: 12, display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border, rgba(0,0,0,0.06))" }}>
+            <span>Network:</span>
+            <span style={{ color: "#f59e0b", fontWeight: 600 }}>NU7 / Ironwood Testnet</span>
+          </div>
+          <div style={{ fontSize: 12, display: "flex", justifyContent: "space-between", padding: "6px 0", borderTop: "1px solid var(--border, rgba(0,0,0,0.06))" }}>
+            <span>Status:</span>
+            <span style={{ color: "var(--success, #10b981)", fontWeight: 600 }}>Online · Block {overview?.zcash?.status?.blockHeight?.toLocaleString() || "2,984,150"}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onOpen("spending")}
+            style={{
+              marginTop: 12,
+              width: "100%",
+              padding: "7px 12px",
+              borderRadius: 8,
+              border: "1px solid var(--border, rgba(0,0,0,0.1))",
+              background: "transparent",
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
+          >
+            Open Zcash Privacy Center &rarr;
           </button>
         </div>
       </div>

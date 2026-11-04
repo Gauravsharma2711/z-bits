@@ -63,6 +63,7 @@ const SANDBOX_CATALOG: BitrefillProduct[] = [
       { value: 5000, price: 5000, currency: "USD" },
       { value: 10000, price: 10000, currency: "USD" },
       { value: 25000, price: 25000, currency: "USD" },
+      { value: 30000, price: 30000, currency: "USD" },
     ],
   },
   {

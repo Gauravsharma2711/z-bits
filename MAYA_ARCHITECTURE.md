@@ -113,3 +113,4 @@ Maya is bound to the `nova` agent runtime in Sidemates. Her dedicated tools incl
 6. `maya_get_purchase_status`: Inspect execution and delivery progress.
 
 Each tool execution strictly verifies `context.botId === "nova"`. Calls from unauthorized teammates (such as `pixel`) are denied at the gateway layer.
+

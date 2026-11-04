@@ -96,6 +96,9 @@ import type {
   BountyEvent,
   BountySource,
   BountyStatus,
+  ZcashShieldedRecord,
+  ZcashNetwork,
+  ZcashTransactionStatus,
 } from "../shared/zbits-types.js";
 
 type Row = Record<string, string | number | null>;
@@ -1437,6 +1440,26 @@ export class OpenBotDatabase {
       );
       CREATE INDEX IF NOT EXISTS idx_bounty_events_owner ON bounty_events(owner_id);
       CREATE INDEX IF NOT EXISTS idx_bounty_events_idempotency ON bounty_events(idempotency_key);
+
+      CREATE TABLE IF NOT EXISTS zcash_transactions (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        network TEXT NOT NULL DEFAULT 'testnet',
+        txid TEXT UNIQUE NOT NULL,
+        from_address TEXT,
+        to_address TEXT NOT NULL,
+        amount_zat INTEGER NOT NULL,
+        memo_ref TEXT NOT NULL,
+        block_height INTEGER,
+        confirmations INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'SUBMITTED',
+        explorer_url TEXT NOT NULL,
+        error_message TEXT,
+        submitted_at TEXT NOT NULL,
+        verified_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_zcash_tx_owner ON zcash_transactions(owner_id);
+      CREATE INDEX IF NOT EXISTS idx_zcash_tx_txid ON zcash_transactions(txid);
     `);
     this.db.exec(`UPDATE bots SET mac_access_enabled=CAST((SELECT setting_value FROM app_settings WHERE setting_key='mac_access_enabled') AS INTEGER)`);
   }
@@ -5488,12 +5511,12 @@ export class OpenBotDatabase {
       intent.recipient,
       intent.merchant,
       intent.productId || null,
-      intent.category || null,
+      intent.category || (intent as any).productCategory || null,
       intent.denominationCents || intent.amountCents,
       intent.currency || "USD",
       intent.amountCents,
       intent.idempotencyKey,
-      intent.intentDigest,
+      intent.intentDigest || createHash("sha256").update(String(intent.idempotencyKey || intent.intentId || at)).digest("hex"),
       intent.status || "PENDING",
       intent.createdAt || at,
       at
@@ -6333,6 +6356,93 @@ export class OpenBotDatabase {
       status: String(row.status) as BountyStatus,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
+    };
+  }
+
+  createZcashTransaction(record: Omit<ZcashShieldedRecord, "amountZec">): ZcashShieldedRecord {
+    const at = now();
+    const created: ZcashShieldedRecord = {
+      ...record,
+      amountZec: record.amountZat / 100_000_000,
+      submittedAt: record.submittedAt || at,
+    };
+    this.db.prepare(`
+      INSERT INTO zcash_transactions
+      (id, owner_id, network, txid, from_address, to_address, amount_zat, memo_ref, block_height, confirmations, status, explorer_url, error_message, submitted_at, verified_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      created.id,
+      created.ownerId,
+      created.network,
+      created.txid,
+      created.fromAddress || null,
+      created.toAddress,
+      created.amountZat,
+      created.memoRef,
+      created.blockHeight || null,
+      created.confirmations || 0,
+      created.status,
+      created.explorerUrl,
+      created.errorMessage || null,
+      created.submittedAt,
+      created.verifiedAt || null
+    );
+    return created;
+  }
+
+  getZcashTransaction(idOrTxid: string): ZcashShieldedRecord | null {
+    const row = this.db.prepare("SELECT * FROM zcash_transactions WHERE id=? OR txid=?").get(idOrTxid, idOrTxid) as Row;
+    if (!row) return null;
+    return this.mapZcashRow(row);
+  }
+
+  updateZcashTransaction(txid: string, patch: Partial<ZcashShieldedRecord>): ZcashShieldedRecord | null {
+    const existing = this.getZcashTransaction(txid);
+    if (!existing) return null;
+    const updated: ZcashShieldedRecord = {
+      ...existing,
+      ...patch,
+      amountZec: (patch.amountZat ?? existing.amountZat) / 100_000_000,
+    };
+    this.db.prepare(`
+      UPDATE zcash_transactions
+      SET block_height=?, confirmations=?, status=?, error_message=?, verified_at=?
+      WHERE txid=?
+    `).run(
+      updated.blockHeight || null,
+      updated.confirmations,
+      updated.status,
+      updated.errorMessage || null,
+      updated.verifiedAt || null,
+      txid
+    );
+    return updated;
+  }
+
+  listZcashTransactions(ownerId = DEFAULT_OWNER, limit = 50): ZcashShieldedRecord[] {
+    const rows = this.db.prepare("SELECT * FROM zcash_transactions WHERE owner_id=? ORDER BY submitted_at DESC LIMIT ?").all(ownerId, limit) as Row[];
+    return rows.map((r) => this.mapZcashRow(r));
+  }
+
+  private mapZcashRow(row: Row): ZcashShieldedRecord {
+    const zat = Number(row.amount_zat);
+    return {
+      id: String(row.id),
+      ownerId: String(row.owner_id),
+      network: String(row.network || "testnet") as ZcashNetwork,
+      txid: String(row.txid),
+      fromAddress: row.from_address ? String(row.from_address) : undefined,
+      toAddress: String(row.to_address),
+      amountZat: zat,
+      amountZec: zat / 100_000_000,
+      memoRef: String(row.memo_ref),
+      blockHeight: row.block_height ? Number(row.block_height) : undefined,
+      confirmations: Number(row.confirmations || 0),
+      status: String(row.status || "SUBMITTED") as ZcashTransactionStatus,
+      explorerUrl: String(row.explorer_url),
+      submittedAt: String(row.submitted_at),
+      verifiedAt: row.verified_at ? String(row.verified_at) : undefined,
+      errorMessage: row.error_message ? String(row.error_message) : undefined,
     };
   }
 

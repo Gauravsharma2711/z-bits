@@ -83,3 +83,4 @@ This proves that **neither agent can starve, bypass, or override the financial p
 2. **Deterministic Digest Validation:** Every intent contains `intentDigest = SHA256(idempotencyKey + botId + merchant + recipient + amountCents + currency + itemDescription)`. Any tampering in transit causes immediate Gate rejection.
 3. **Single-Use Replay Protection:** When Runner receives a SpendPass, it performs an atomic claim in SQLite (`UPDATE spendpass_tokens SET status='CLAIMED' WHERE id=? AND status='ISSUED'`). Replaying a token returns `SPENDPASS_ALREADY_CLAIMED`.
 4. **Credential Masking:** Raw digital gift card codes and PINs are masked (`STEAM-CODE-****-2026`) in all database records, invoice logs, and agent response payloads.
+

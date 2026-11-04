@@ -9,12 +9,13 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> ·
   <a href="#the-bits-team">The Bits Team</a> ·
-  <a href="#universal-ai-providers">Universal AI</a> ·
   <a href="#deterministic-gate--runner">Gate & Runner</a> ·
-  <a href="PROVIDER_SETUP.md">Provider Setup</a> ·
-  <a href="ZBITS_ARCHITECTURE.md">Architecture</a> ·
-  <a href="SECURITY.md">Security</a> ·
-  <a href="UPSTREAM_NOTICES.md">Upstream Notices</a>
+  <a href="#zcash-privacy--settlement">Zcash Privacy</a> ·
+  <a href="PRIVACY_AND_TRUST.md">Privacy & Trust</a> ·
+  <a href="ZCASH_ARCHITECTURE.md">Zcash Architecture</a> ·
+  <a href="DEMO_RUNBOOK.md">Demo Runbook</a> ·
+  <a href="E2E_TEST_REPORT.md">E2E Tests</a> ·
+  <a href="SECURITY_REVIEW.md">Security Review</a>
 </p>
 
 <p align="center">
@@ -83,16 +84,29 @@ The long-term vision of Z-Bits is **autonomous personal commerce** with absolute
        │
        ▼
 [Runner Execution Layer (Server-Side Isolation)]
-  ├─ Bitrefill Commerce Adapter (Disabled until real API keys connected)
-  ├─ Zcash Shielded Settlement (Isolated from LLMs)
+  ├─ Bitrefill Commerce Adapter (Digital gift cards, mobile top-ups)
+  ├─ Zcash Shielded Settlement (NU7 Testnet, Unified Addresses)
   └─ Zero API key or wallet exposure to conversational models
 ```
 
 ### Gate Safeguards
 - **Per-Transaction Cap:** Restricts the maximum value of any individual purchase.
 - **Daily & Monthly Budgets:** Prevents cumulative overspending.
+- **Cross-Agent Recipient Caps:** Shared budget ledger prevents multi-agent collusive spending.
 - **Approval Thresholds:** High-value transactions automatically pause for explicit human review.
 - **Emergency Kill Switch:** A single toggle immediately rejects all pending and future agent transactions globally.
+
+---
+
+## Zcash Privacy & Settlement
+
+Z-Bits anchors financial verification and settlement onto the **Zcash NU7 Testnet**:
+
+1. **Unified Addresses (ZIP 316):** Full support for shielded Unified Addresses (`utest1...`) and Sapling pools.
+2. **Strict Zero-PII Encrypted Memos:** Memos on-chain strictly follow the opaque format `zbits:ord_<id>`. A regex auditor blocks plain-text names, emails, and claim PINs fail-closed prior to broadcast.
+3. **On-Chain Verification:** Transactions are verified on-chain via `blockexplorer.one` with confirmed block heights and confirmations.
+4. **Vizor Wallet Integration:** Standalone desktop wallet workflow supporting Keystone air-gapped signing via animated PCZT QR codes (ZIP 370).
+5. **Privacy & Trust:** Complete answers to what stays private, what is revealed, what is trusted, and production fixes documented in [PRIVACY_AND_TRUST.md](PRIVACY_AND_TRUST.md).
 
 ---
 
@@ -106,8 +120,8 @@ The long-term vision of Z-Bits is **autonomous personal commerce** with absolute
 
 ```bash
 # Clone the repository
-git clone https://github.com/Gauravsharma2711/side-bits.git
-cd side-bits
+git clone https://github.com/Gauravsharma2711/z-bits.git
+cd z-bits
 
 # Install dependencies cleanly
 npm ci
@@ -127,16 +141,16 @@ npm run build
 npm start
 ```
 
-Open your browser at `http://127.0.0.1:4310` to open **Z-Bits Studio**.
+Open your browser at `http://localhost:5173/` or `http://127.0.0.1:4310` to open **Z-Bits Studio**.
 
 ### Verification & Testing
 
 ```bash
-# Type check TypeScript codebase
-npm run check
+# Run all 8 mandatory Hackathon E2E Scenarios (100% PASS)
+$env:NODE_ENV="test"; node --import tsx --test src/server/e2e/e2e-scenarios.test.ts
 
-# Run Z-Bits test suites (Personas, Gate Engine, Universal Providers)
-npx tsx --test src/shared/zbits-personas.test.ts src/server/gate/gate-engine.test.ts src/server/providers/provider-adapters.test.ts
+# Run all 48 subsystem regression tests (Gate, SpendPass, Runner, Maya, Bolt)
+$env:NODE_ENV="test"; node --import tsx --test src/server/gate/gate-engine.test.ts src/server/gate/spendpass.test.ts src/server/runner/runner.test.ts src/server/agents/agents-workflow.test.ts
 ```
 
 ---

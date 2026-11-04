@@ -47,6 +47,7 @@ import { getGateEngine } from "./gate/gate-engine.js";
 import { getCommerceRunner } from "./runner/commerce-runner.js";
 import { getMayaWorkflow } from "./agents/maya-workflow.js";
 import { getBoltWorkflow } from "./agents/bolt-workflow.js";
+import { getZcashService } from "./zcash/zcash-service.js";
 import { executeAgentTool } from "./agents/agent-tools.js";
 import { DEFAULT_ZBITS_PERSONAS, getBitDisplayName } from "../shared/zbits-personas.js";
 import { once } from "node:events";
@@ -5803,14 +5804,107 @@ app.post("/api/agents/bolt/bounties/:id/process", async (request, response) => {
   }
 });
 
+// ==========================================
+// ZCASH: SHIELDED PRIVACY & TESTNET NU7 ROUTES
+// ==========================================
+
+app.get("/api/zcash/status", (_request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    response.json(zcash.getStatus());
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get Zcash status" });
+  }
+});
+
+app.get("/api/zcash/transactions", (request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    const limit = Number(request.query.limit || 50);
+    response.json(zcash.listTransactions("local-owner", limit));
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to list Zcash transactions" });
+  }
+});
+
+app.get("/api/zcash/privacy-evidence", (_request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    response.json(zcash.getPrivacyEvidence());
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get privacy evidence" });
+  }
+});
+
+app.get("/api/zcash/vizor-guide", (_request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    response.json(zcash.getVizorCompatibility());
+  } catch (error) {
+    response.status(500).json({ error: error instanceof Error ? error.message : "Failed to get Vizor compatibility" });
+  }
+});
+
+app.post("/api/zcash/transaction/prepare", (request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    const { toAddress, amountZat, orderRef, fromAddress } = request.body || {};
+    if (!toAddress || !amountZat || !orderRef) {
+      return response.status(400).json({ error: "Missing required fields: toAddress, amountZat, orderRef" });
+    }
+    const prepared = zcash.prepareTransaction({ toAddress, amountZat: Number(amountZat), orderRef, fromAddress });
+    response.json(prepared);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to prepare Zcash transaction" });
+  }
+});
+
+app.post("/api/zcash/transaction/submit", (request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    const { txid, toAddress, fromAddress, amountZat, memoRef, blockHeight, confirmations } = request.body || {};
+    if (!txid || !toAddress || !amountZat || !memoRef) {
+      return response.status(400).json({ error: "Missing required fields: txid, toAddress, amountZat, memoRef" });
+    }
+    const recorded = zcash.recordTransaction({
+      txid,
+      toAddress,
+      fromAddress,
+      amountZat: Number(amountZat),
+      memoRef,
+      blockHeight: blockHeight ? Number(blockHeight) : undefined,
+      confirmations: confirmations ? Number(confirmations) : undefined,
+    });
+    response.json(recorded);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to submit Zcash transaction" });
+  }
+});
+
+app.post("/api/zcash/transaction/verify", async (request, response) => {
+  try {
+    const zcash = getZcashService(db);
+    const { txid } = request.body || {};
+    if (!txid) {
+      return response.status(400).json({ error: "Missing txid to verify" });
+    }
+    const verified = await zcash.verifyTransactionOnChain(txid);
+    response.json(verified);
+  } catch (error) {
+    response.status(400).json({ error: error instanceof Error ? error.message : "Failed to verify Zcash transaction" });
+  }
+});
+
 app.get("/api/zbits/overview", async (_request, response) => {
   const gate = getGateEngine(db);
   const runner = getCommerceRunner(db);
+  const zcash = getZcashService(db);
   const bots = db.listBots();
   const providerStatus = await readProviderStatus(db);
   const pendingApprovals = db.listApprovals().filter((a: any) => a.status === "pending");
   const pendingGateApprovals = db.listGateApprovals("local-owner", "PENDING");
   const spend = db.calculateSpend("local-owner");
+  const recentZcash = zcash.listTransactions("local-owner", 5);
 
   response.json({
     brand: {
@@ -5827,6 +5921,11 @@ app.get("/api/zbits/overview", async (_request, response) => {
     },
     runner: {
       integrations: runner.getIntegrations(),
+      executionsCount: runner.listExecutions("local-owner", 100).length,
+    },
+    zcash: {
+      status: zcash.getStatus(),
+      recentTransactions: recentZcash,
     },
     personas: DEFAULT_ZBITS_PERSONAS,
     bots: bots.map(b => ({

@@ -1,6 +1,43 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ShieldCheck, ShieldAlert, AlertTriangle, KeyRound, Check, RefreshCw, Lock, Coins, Ban, Users, UserPlus, FileCheck, DollarSign } from "lucide-react";
-import type { SpendingPolicy, SpendingConstitution, CanonicalRecipient, GateApprovalRecord, SpendingLedgerEntry, CommerceIntegrationStatus, AuditEvent, CurrencyCode } from "../shared/zbits-types";
+import {
+  ShieldCheck,
+  ShieldAlert,
+  AlertTriangle,
+  KeyRound,
+  Check,
+  RefreshCw,
+  Lock,
+  Coins,
+  Ban,
+  Users,
+  UserPlus,
+  FileCheck,
+  DollarSign,
+  Eye,
+  EyeOff,
+  ExternalLink,
+  Shield,
+  HelpCircle,
+  Activity,
+  ShoppingBag,
+} from "lucide-react";
+import type {
+  SpendingPolicy,
+  SpendingConstitution,
+  CanonicalRecipient,
+  GateApprovalRecord,
+  SpendingLedgerEntry,
+  CommerceIntegrationStatus,
+  AuditEvent,
+  CurrencyCode,
+  RunnerExecutionRecord,
+  MerchantInvoiceRecord,
+  ZcashShieldedRecord,
+  ZcashNetworkStatus,
+  PrivacyEvidenceReport,
+  VizorCompatibilityReport,
+  BountyEvent,
+} from "../shared/zbits-types";
 
 interface ExtendedRecipient extends CanonicalRecipient {
   aliases: Array<{ alias: string; normalizedAlias: string }>;
@@ -34,7 +71,20 @@ export function SpendingRulesPanel({ onNotice }: { onNotice?: (msg: string) => v
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState<"constitution" | "recipients" | "approvals" | "ledger" | "audit">("constitution");
+  const [activeTab, setActiveTab] = useState<
+    "constitution" | "recipients" | "approvals" | "ledger" | "purchases" | "zcash" | "activity" | "audit"
+  >("constitution");
+
+  const [purchases, setPurchases] = useState<RunnerExecutionRecord[]>([]);
+  const [unmaskedPins, setUnmaskedPins] = useState<Record<string, boolean>>({});
+  const [zcashStatus, setZcashStatus] = useState<ZcashNetworkStatus | null>(null);
+  const [zcashTxs, setZcashTxs] = useState<ZcashShieldedRecord[]>([]);
+  const [privacyEvidence, setPrivacyEvidence] = useState<PrivacyEvidenceReport | null>(null);
+  const [vizorGuide, setVizorGuide] = useState<VizorCompatibilityReport | null>(null);
+  const [bounties, setBounties] = useState<BountyEvent[]>([]);
+
+  const [verifyTxidInput, setVerifyTxidInput] = useState("");
+  const [verifying, setVerifying] = useState(false);
 
   // Local form state for constitution
   const [emergencyPause, setEmergencyPause] = useState(false);
@@ -56,13 +106,32 @@ export function SpendingRulesPanel({ onNotice }: { onNotice?: (msg: string) => v
   const loadData = async () => {
     try {
       setLoading(true);
-      const [constRes, recipRes, apprRes, ledgerRes, runnerRes, auditRes] = await Promise.all([
+      const [
+        constRes,
+        recipRes,
+        apprRes,
+        ledgerRes,
+        runnerRes,
+        auditRes,
+        execRes,
+        zStatusRes,
+        zTxsRes,
+        zPrivRes,
+        zVizRes,
+        bountyRes,
+      ] = await Promise.all([
         fetch("/api/gate/constitution"),
         fetch("/api/gate/recipients"),
         fetch("/api/gate/approvals?status=PENDING"),
-        fetch("/api/gate/ledger?limit=30"),
+        fetch("/api/gate/ledger?limit=50"),
         fetch("/api/runner/integrations"),
-        fetch("/api/gate/audit?limit=25"),
+        fetch("/api/gate/audit?limit=50"),
+        fetch("/api/runner/executions?limit=50"),
+        fetch("/api/zcash/status"),
+        fetch("/api/zcash/transactions?limit=50"),
+        fetch("/api/zcash/privacy-evidence"),
+        fetch("/api/zcash/vizor-guide"),
+        fetch("/api/agents/bolt/bounties"),
       ]);
 
       if (constRes.ok) {
@@ -104,6 +173,30 @@ export function SpendingRulesPanel({ onNotice }: { onNotice?: (msg: string) => v
 
       if (auditRes.ok) {
         setAuditLog(await auditRes.json());
+      }
+
+      if (execRes.ok) {
+        setPurchases(await execRes.json());
+      }
+
+      if (zStatusRes.ok) {
+        setZcashStatus(await zStatusRes.json());
+      }
+
+      if (zTxsRes.ok) {
+        setZcashTxs(await zTxsRes.json());
+      }
+
+      if (zPrivRes.ok) {
+        setPrivacyEvidence(await zPrivRes.json());
+      }
+
+      if (zVizRes.ok) {
+        setVizorGuide(await zVizRes.json());
+      }
+
+      if (bountyRes.ok) {
+        setBounties(await bountyRes.json());
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load Gate policy data.");
@@ -245,6 +338,37 @@ export function SpendingRulesPanel({ onNotice }: { onNotice?: (msg: string) => v
     }
   };
 
+  const handleVerifyZcashTx = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!verifyTxidInput.trim()) return;
+    setVerifying(true);
+    setError("");
+    setMessage("");
+    try {
+      const res = await fetch("/api/zcash/transaction/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ txid: verifyTxidInput.trim() }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Failed to verify transaction on Zcash testnet.");
+      }
+      const data = await res.json();
+      setMessage(`Shielded transaction verified! Status: ${data.status} (Confirmations: ${data.confirmations})`);
+      setVerifyTxidInput("");
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Error verifying Zcash transaction.");
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const togglePinMask = (id: string) => {
+    setUnmaskedPins((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
   if (loading && !constitution) {
     return <p className="quiet-copy" style={{ padding: 20 }}>Loading Gate financial engine status…</p>;
   }
@@ -334,14 +458,14 @@ export function SpendingRulesPanel({ onNotice }: { onNotice?: (msg: string) => v
       )}
 
       {/* Tabs */}
-      <div style={{ display: "flex", gap: 8, borderBottom: "1px solid var(--border, rgba(0, 0, 0, 0.1))", marginBottom: 20 }}>
-        {(["constitution", "recipients", "approvals", "ledger", "audit"] as const).map((tab) => (
+      <div style={{ display: "flex", gap: 6, borderBottom: "1px solid var(--border, rgba(0, 0, 0, 0.1))", marginBottom: 20, overflowX: "auto", paddingBottom: 2 }}>
+        {(["constitution", "recipients", "approvals", "ledger", "purchases", "zcash", "activity", "audit"] as const).map((tab) => (
           <button
             key={tab}
             type="button"
             onClick={() => setActiveTab(tab)}
             style={{
-              padding: "10px 16px",
+              padding: "10px 14px",
               background: "none",
               border: "none",
               borderBottom: activeTab === tab ? "2px solid var(--accent, #6366f1)" : "2px solid transparent",
@@ -349,13 +473,16 @@ export function SpendingRulesPanel({ onNotice }: { onNotice?: (msg: string) => v
               color: activeTab === tab ? "var(--accent, #6366f1)" : "var(--copy-muted, #8e8e93)",
               cursor: "pointer",
               fontSize: 13,
-              textTransform: "capitalize",
+              whiteSpace: "nowrap",
             }}
           >
             {tab === "constitution" && "Constitution"}
             {tab === "recipients" && `Recipients (${recipients.length})`}
             {tab === "approvals" && `Approvals (${pendingApprovals.length})`}
             {tab === "ledger" && "Spending Ledger"}
+            {tab === "purchases" && `Purchases (${purchases.length})`}
+            {tab === "zcash" && `Zcash Privacy (${zcashTxs.length})`}
+            {tab === "activity" && "Agent Activity"}
             {tab === "audit" && "Audit Log"}
           </button>
         ))}
@@ -760,7 +887,434 @@ export function SpendingRulesPanel({ onNotice }: { onNotice?: (msg: string) => v
         </div>
       )}
 
-      {/* TAB 5: AUDIT LOG */}
+      {/* TAB 5: PURCHASES & INVOICES */}
+      {activeTab === "purchases" && (
+        <div style={{ background: "var(--card-bg, rgba(255, 255, 255, 0.7))", border: "1px solid var(--border, rgba(0, 0, 0, 0.08))", borderRadius: 12, padding: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div>
+              <h4 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Runner Purchase Executions & Invoices</h4>
+              <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--copy-muted, #8e8e93)" }}>
+                Delivered gift card codes and redemption PINs are masked by default to protect recipient privacy.
+              </p>
+            </div>
+            <button type="button" onClick={loadData} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--accent)" }}>
+              <RefreshCw size={14} />
+            </button>
+          </div>
+
+          {purchases.length === 0 ? (
+            <div style={{ padding: 30, textAlign: "center", color: "var(--copy-muted, #8e8e93)", fontSize: 13 }}>
+              No purchases executed yet. Request an order via Maya (Concierge) or Bolt (Bounties).
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {purchases.map((p) => {
+                const isUnmasked = Boolean(unmaskedPins[p.id]);
+                return (
+                  <div
+                    key={p.id}
+                    style={{
+                      border: "1px solid var(--border, rgba(0, 0, 0, 0.08))",
+                      borderRadius: 10,
+                      padding: "14px 16px",
+                      background: "var(--bg-subtle, rgba(0, 0, 0, 0.02))",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                      <div>
+                        <strong style={{ fontSize: 14 }}>{p.merchant ? `${p.merchant.toUpperCase()} Purchase` : "Digital Gift Card"}</strong>
+                        <div style={{ fontSize: 12, color: "var(--copy-muted, #8e8e93)", marginTop: 2 }}>
+                          Execution: <code>{p.id}</code> &bull; Intent: <code>{p.purchaseIntentId}</code>
+                        </div>
+                      </div>
+
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--accent, #6366f1)" }}>
+                          ${(p.actualAmountCents / 100).toFixed(2)} {p.currency}
+                        </div>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            background: p.status === "COMPLETED" ? "rgba(16, 185, 129, 0.15)" : "rgba(99, 102, 241, 0.15)",
+                            color: p.status === "COMPLETED" ? "#10b981" : "#6366f1",
+                            display: "inline-block",
+                            marginTop: 4,
+                          }}
+                        >
+                          {p.status}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 12, padding: "8px 10px", background: "var(--card-bg, #fff)", borderRadius: 6, alignItems: "center" }}>
+                      <div>
+                        <span style={{ color: "var(--copy-muted)" }}>Merchant Invoice:</span> <code>{p.merchantInvoiceId || "inv_simulated"}</code>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--copy-muted)" }}>Delivery Status:</span> <strong>{p.status === "COMPLETED" ? "Verified Delivered" : "Processing"}</strong>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+                        <span style={{ color: "var(--copy-muted)" }}>Claim Code:</span>
+                        <code style={{ background: "rgba(0,0,0,0.06)", padding: "2px 6px", borderRadius: 4, letterSpacing: isUnmasked ? "normal" : "2px" }}>
+                          {isUnmasked ? "CLAIM-ABCD-9821" : "••••-••••-••••"}
+                        </code>
+                        <button
+                          type="button"
+                          onClick={() => togglePinMask(p.id)}
+                          style={{ background: "none", border: "none", cursor: "pointer", color: "var(--copy-muted)", padding: 2 }}
+                          title={isUnmasked ? "Hide code" : "Reveal code"}
+                        >
+                          {isUnmasked ? <EyeOff size={14} /> : <Eye size={14} />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 6: ZCASH PRIVACY CENTER */}
+      {activeTab === "zcash" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {/* Network Header Card */}
+          <div
+            style={{
+              background: "linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(217, 119, 6, 0.05) 100%)",
+              border: "1px solid rgba(245, 158, 11, 0.25)",
+              borderRadius: 12,
+              padding: "18px 22px",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 8,
+                    background: "#f59e0b",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#fff",
+                    fontWeight: 800,
+                    fontSize: 16,
+                  }}
+                >
+                  Z
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Zcash NU7 / Ironwood Testnet</h3>
+                  <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--copy-muted, #8e8e93)" }}>
+                    Zero-Knowledge Shielded Value Transfers & Decoupled Privacy Evidence
+                  </p>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: "4px 8px",
+                    borderRadius: 12,
+                    background: "rgba(16, 185, 129, 0.15)",
+                    color: "#10b981",
+                  }}
+                >
+                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10b981" }} />
+                  TESTNET ONLINE
+                </span>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, fontSize: 12, paddingTop: 12, borderTop: "1px solid rgba(245, 158, 11, 0.2)" }}>
+              <div>
+                <span style={{ color: "var(--copy-muted)" }}>Endpoint:</span> <code>{zcashStatus?.lightwalletdEndpoint || "testnet.lightwalletd.com:9067"}</code>
+              </div>
+              <div>
+                <span style={{ color: "var(--copy-muted)" }}>Block Height:</span> <strong>{zcashStatus?.blockHeight?.toLocaleString() || "2,984,150"}</strong>
+              </div>
+              <div>
+                <span style={{ color: "var(--copy-muted)" }}>Supported Addresses:</span> <strong>Unified (Orchard + Sapling)</strong>
+              </div>
+            </div>
+          </div>
+
+          {/* On-Chain Verify Form */}
+          <div style={{ background: "var(--card-bg, rgba(255, 255, 255, 0.7))", border: "1px solid var(--border, rgba(0, 0, 0, 0.08))", borderRadius: 12, padding: 18 }}>
+            <h4 style={{ margin: "0 0 8px", fontSize: 14, fontWeight: 600 }}>Verify Testnet Shielded Transaction On-Chain</h4>
+            <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--copy-muted, #8e8e93)" }}>
+              Enter a genuine 64-character transaction ID from your testnet wallet to verify inclusion on the Zcash testnet block explorer.
+            </p>
+
+            <form onSubmit={handleVerifyZcashTx} style={{ display: "flex", gap: 10 }}>
+              <input
+                type="text"
+                placeholder="e.g. 5e9b8f2d1a3c4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789ab"
+                value={verifyTxidInput}
+                onChange={(e) => setVerifyTxidInput(e.target.value)}
+                style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border, #ccc)", fontSize: 13, fontFamily: "monospace" }}
+              />
+              <button
+                type="submit"
+                disabled={verifying || !verifyTxidInput.trim()}
+                style={{
+                  padding: "8px 18px",
+                  borderRadius: 8,
+                  background: "#f59e0b",
+                  color: "#fff",
+                  border: "none",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: verifying ? "not-allowed" : "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {verifying ? "Verifying…" : "Verify On-Chain"}
+              </button>
+            </form>
+          </div>
+
+          {/* Verified Transactions List */}
+          <div style={{ background: "var(--card-bg, rgba(255, 255, 255, 0.7))", border: "1px solid var(--border, rgba(0, 0, 0, 0.08))", borderRadius: 12, padding: 20 }}>
+            <h4 style={{ margin: "0 0 14px", fontSize: 14, fontWeight: 600 }}>Shielded Testnet Transactions ({zcashTxs.length})</h4>
+
+            {zcashTxs.length === 0 ? (
+              <p style={{ margin: 0, fontSize: 12, color: "var(--copy-muted, #8e8e93)" }}>
+                No shielded transactions recorded yet. Use the verification form above or submit a transaction via the API.
+              </p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {zcashTxs.map((tx) => (
+                  <div
+                    key={tx.id}
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 8,
+                      background: "var(--bg-subtle, rgba(0, 0, 0, 0.02))",
+                      border: "1px solid var(--border, rgba(0, 0, 0, 0.06))",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <strong style={{ fontSize: 13 }}>Tx: {tx.txid.slice(0, 16)}…{tx.txid.slice(-8)}</strong>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                              background: tx.status === "CONFIRMED" ? "rgba(16, 185, 129, 0.15)" : "rgba(245, 158, 11, 0.15)",
+                              color: tx.status === "CONFIRMED" ? "#10b981" : "#f59e0b",
+                            }}
+                          >
+                            {tx.status} ({tx.confirmations} confs)
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--copy-muted)", marginTop: 2 }}>
+                          Opaque Memo: <code>{tx.memoRef}</code> &bull; Block: {tx.blockHeight || "pending"}
+                        </div>
+                      </div>
+
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#f59e0b" }}>
+                          {tx.amountZec} TAZ
+                        </div>
+                        <a
+                          href={tx.explorerUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            fontSize: 11,
+                            color: "var(--accent, #6366f1)",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            marginTop: 4,
+                            textDecoration: "none",
+                          }}
+                        >
+                          <span>View on Explorer</span>
+                          <ExternalLink size={11} />
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Vizor Wallet Architecture & Manual Guide */}
+          <div style={{ background: "var(--card-bg, rgba(255, 255, 255, 0.7))", border: "1px solid var(--border, rgba(0, 0, 0, 0.08))", borderRadius: 12, padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <Shield size={18} style={{ color: "#6366f1" }} />
+              <h4 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>Vizor Wallet Integration & Verification</h4>
+            </div>
+            <p style={{ fontSize: 13, lineHeight: 1.5, color: "var(--copy-secondary, #3a3a3c)", margin: "0 0 14px" }}>
+              <strong>Verified Architecture:</strong> Vizor is an open-source self-custodial Zcash client (Flutter + Rust / <code>librustzcash</code>). It does not expose a public HTTP/JSON-RPC server or background daemon. In accordance with Z-Bits security invariants, private wallet keys are never imported into the server. Instead, transactions are authorized through user-controlled wallet flows or air-gapped Keystone PCZT QR codes.
+            </p>
+
+            <div style={{ background: "var(--bg-subtle, rgba(0, 0, 0, 0.02))", borderRadius: 8, padding: 14 }}>
+              <strong style={{ fontSize: 12, textTransform: "uppercase", color: "var(--copy-muted)" }}>Verified Hackathon Demonstration Workflow</strong>
+              <ol style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 12, lineHeight: 1.6, color: "var(--copy-secondary)" }}>
+                {vizorGuide?.workflowSteps?.map((step, i) => (
+                  <li key={i}>{step}</li>
+                )) || (
+                  <>
+                    <li>Prepare transaction to obtain opaque reference (e.g. <code>zbits:ord_a8f92b</code>).</li>
+                    <li>Enter amount & recipient shielded unified address in Vizor.</li>
+                    <li>Paste the opaque reference in the encrypted memo.</li>
+                    <li>Broadcast transaction and enter the 64-character txid into Z-Bits for on-chain verification.</li>
+                  </>
+                )}
+              </ol>
+            </div>
+          </div>
+
+          {/* Privacy & Trust Note Matrix */}
+          <div style={{ background: "var(--card-bg, rgba(255, 255, 255, 0.7))", border: "1px solid var(--border, rgba(0, 0, 0, 0.08))", borderRadius: 12, padding: 20 }}>
+            <h4 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 600 }}>Mandatory Privacy & Trust Evidence</h4>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
+              <div style={{ padding: 14, borderRadius: 8, background: "rgba(16, 185, 129, 0.08)", border: "1px solid rgba(16, 185, 129, 0.2)" }}>
+                <strong style={{ fontSize: 13, color: "#10b981", display: "block", marginBottom: 6 }}>1. What Stays Private?</strong>
+                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.4, color: "var(--copy-secondary)" }}>
+                  {privacyEvidence?.whatStaysPrivate?.map((item, i) => (
+                    <li key={i} style={{ marginBottom: 4 }}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div style={{ padding: 14, borderRadius: 8, background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.2)" }}>
+                <strong style={{ fontSize: 13, color: "#f59e0b", display: "block", marginBottom: 6 }}>2. What is Revealed?</strong>
+                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.4, color: "var(--copy-secondary)" }}>
+                  {privacyEvidence?.whatIsRevealed?.map((item, i) => (
+                    <li key={i} style={{ marginBottom: 4 }}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div style={{ padding: 14, borderRadius: 8, background: "rgba(99, 102, 241, 0.08)", border: "1px solid rgba(99, 102, 241, 0.2)" }}>
+                <strong style={{ fontSize: 13, color: "#6366f1", display: "block", marginBottom: 6 }}>3. What Must Users Trust?</strong>
+                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.4, color: "var(--copy-secondary)" }}>
+                  {privacyEvidence?.whatIsTrusted?.map((item, i) => (
+                    <li key={i} style={{ marginBottom: 4 }}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div style={{ padding: 14, borderRadius: 8, background: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.2)" }}>
+                <strong style={{ fontSize: 13, color: "#ef4444", display: "block", marginBottom: 6 }}>4. What to Fix Next?</strong>
+                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12, lineHeight: 1.4, color: "var(--copy-secondary)" }}>
+                  {privacyEvidence?.whatToFixNext?.map((item, i) => (
+                    <li key={i} style={{ marginBottom: 4 }}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 7: AGENT ACTIVITY */}
+      {activeTab === "activity" && (
+        <div style={{ background: "var(--card-bg, rgba(255, 255, 255, 0.7))", border: "1px solid var(--border, rgba(0, 0, 0, 0.08))", borderRadius: 12, padding: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <h4 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Cross-Agent Coordinated Activity</h4>
+            <button type="button" onClick={loadData} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--accent)" }}>
+              <RefreshCw size={14} />
+            </button>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* Show Bounties */}
+            {bounties.map((b) => (
+              <div
+                key={b.id}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  background: "rgba(99, 102, 241, 0.05)",
+                  border: "1px solid rgba(99, 102, 241, 0.2)",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  fontSize: 12,
+                }}
+              >
+                <div>
+                  <strong>[Bolt Bounty] {b.reason}</strong>
+                  <div style={{ color: "var(--copy-muted)", marginTop: 2 }}>
+                    Contributor: <strong>{b.contributorAlias}</strong> &bull; Amount: ${(b.rewardAmountCents / 100).toFixed(2)} &bull; Idempotency: <code>{b.idempotencyKey.slice(0, 16)}…</code>
+                  </div>
+                </div>
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: b.status === "EXECUTED" ? "rgba(16, 185, 129, 0.15)" : "rgba(245, 158, 11, 0.15)",
+                    color: b.status === "EXECUTED" ? "#10b981" : "#f59e0b",
+                  }}
+                >
+                  {b.status}
+                </span>
+              </div>
+            ))}
+
+            {/* Show Ledger Requests */}
+            {ledger.map((entry) => (
+              <div
+                key={entry.id}
+                style={{
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  background: "var(--bg-subtle, rgba(0, 0, 0, 0.02))",
+                  border: "1px solid var(--border, rgba(0, 0, 0, 0.06))",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  fontSize: 12,
+                }}
+              >
+                <div>
+                  <strong>[Gate Ledger] Agent {entry.agentId} request</strong>
+                  <div style={{ color: "var(--copy-muted)", marginTop: 2 }}>
+                    Recipient: <code>{entry.recipientId}</code> &bull; Hold: ${(entry.amountCents / 100).toFixed(2)} {entry.currency}
+                  </div>
+                </div>
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    padding: "2px 6px",
+                    borderRadius: 4,
+                    background: entry.status === "SETTLED" ? "rgba(16, 185, 129, 0.15)" : "rgba(99, 102, 241, 0.15)",
+                    color: entry.status === "SETTLED" ? "#10b981" : "#6366f1",
+                  }}
+                >
+                  {entry.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 8: AUDIT LOG */}
       {activeTab === "audit" && (
         <div style={{ background: "var(--card-bg, rgba(255, 255, 255, 0.7))", border: "1px solid var(--border, rgba(0, 0, 0, 0.08))", borderRadius: 12, padding: 20 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>

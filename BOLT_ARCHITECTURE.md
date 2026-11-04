@@ -108,3 +108,4 @@ Bolt is bound to the `pixel` agent runtime in Sidemates. His dedicated tools inc
 5. `bolt_get_bounty_status`: Inspect lifecycle status, execution ID, and delivery reference.
 
 Every tool invocation checks `context.botId === "pixel"`. Attempts by `nova` or unapproved bots to call Bolt tools are rejected with a permission error.
+

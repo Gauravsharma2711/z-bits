@@ -102,11 +102,11 @@ export class CommerceRunner {
       },
       {
         id: "zcash",
-        name: "Zcash Shielded Settlement",
-        enabled: false,
-        status: "coming_soon",
-        description: "Zero-knowledge private value transfer and verification infrastructure (Phase 07).",
-        notice: "Zcash shielded testnet transaction evidence runs as an independent demonstration in Phase 07.",
+        name: "Zcash Shielded Privacy",
+        enabled: true,
+        status: "active",
+        description: "Zero-knowledge shielded transactions on Zcash NU7 testnet with opaque memo references.",
+        notice: "Active on Zcash NU7 / Ironwood Testnet. Transactions verified via testnet block explorer.",
       },
     ];
   }

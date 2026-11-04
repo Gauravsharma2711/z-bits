@@ -574,3 +574,56 @@ export interface BoltWorkflowResult {
   deliveryRef?: string;
   approvalId?: string;
 }
+
+// ==========================================
+// ZCASH: SHIELDED PRIVACY & TESTNET NU7
+// ==========================================
+
+export type ZcashNetwork = "testnet" | "mainnet";
+export type ZcashTransactionStatus = "PENDING" | "SUBMITTED" | "CONFIRMED" | "FAILED";
+
+export interface ZcashShieldedRecord {
+  id: string;
+  ownerId: string;
+  network: ZcashNetwork;
+  txid: string;
+  fromAddress?: string;
+  toAddress: string;
+  amountZat: number;
+  amountZec: number;
+  memoRef: string; // STRICTLY OPAQUE REFERENCE e.g. "zbits:ord_a8f92b" - ZERO PII
+  blockHeight?: number;
+  confirmations: number;
+  status: ZcashTransactionStatus;
+  explorerUrl: string;
+  submittedAt: string;
+  verifiedAt?: string;
+  errorMessage?: string;
+}
+
+export interface VizorCompatibilityReport {
+  supported: boolean;
+  network: "testnet" | "mainnet";
+  signingMode: "air-gapped-pczt-qr" | "manual-wallet";
+  apiSupported: boolean;
+  daemonSupported: boolean;
+  notes: string;
+  workflowSteps: string[];
+}
+
+export interface ZcashNetworkStatus {
+  network: ZcashNetwork;
+  isOnline: boolean;
+  lightwalletdEndpoint: string;
+  blockHeight: number;
+  networkUpgrade: string;
+  supportedAddressTypes: string[];
+  vizorCompatibility: VizorCompatibilityReport;
+}
+
+export interface PrivacyEvidenceReport {
+  whatStaysPrivate: string[];
+  whatIsRevealed: string[];
+  whatIsTrusted: string[];
+  whatToFixNext: string[];
+}
